@@ -1,0 +1,12 @@
+{
+  "name": "Borshevik Workspace Manager",
+  "description": "Maximized and fullscreen windows are automatically moved to an empty workspace. Supports multiple monitors.",
+  "url": "https://github.com/komorebinator/borshevik-workspace-manager",
+  "uuid": "borshevik-workspace-manager@komorebinator",
+  "shell-version": [
+    "48",
+    "49"
+  ],
+  "version": 1,
+  "settings-schema": "org.gnome.shell.extensions.borshevik-workspace-manager"
+}
