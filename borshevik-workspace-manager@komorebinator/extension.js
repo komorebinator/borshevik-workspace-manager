@@ -306,6 +306,14 @@ export default class BorshevikWorkspaceManager extends Extension {
             this._removeFromLayout(win);
             info.state = 'maximized';
             LOG('→ maximized:', win.get_wm_class(), 'from', info.preMaxState);
+            // Window maximized and there are other windows on this workspace →
+            // give it its own workspace. preMaxState is preserved so _onUnmaximized
+            // can return it to the correct side (or float) on the previous workspace.
+            if (this._settings.get_boolean('move-window-when-maximized')) {
+                const hasOthers = this._hasOtherWindows(info.layoutKey, win);
+                if (hasOthers)
+                    this._defer(() => this._moveToNewWorkspace(win));
+            }
 
         } else if (!full && info.state === 'maximized') {
             this._onUnmaximized(win, info);
@@ -326,6 +334,41 @@ export default class BorshevikWorkspaceManager extends Extension {
 
         LOG('← unmaximized:', win.get_wm_class(), 'restoring', prev);
 
+        // On an auto-created workspace: try to return to the previous workspace.
+        // Prefer the side the window came from; fall back to any free slot.
+        if (this._settings.get_boolean('move-window-when-maximized')) {
+            const currentWs = win.get_workspace();
+            if (currentWs && this._ourWorkspaces.has(currentWs)) {
+                const prevWsIdx = currentWs.index() - 1;
+                const manager   = global.workspace_manager;
+                const prevWs    = prevWsIdx >= 0 ? manager.get_workspace_by_index(prevWsIdx) : null;
+                if (prevWs) {
+                    const monitor    = win.get_monitor();
+                    const prevKey    = `${prevWsIdx}:${monitor}`;
+                    const prevLayout = this._getLayout(prevKey);
+
+                    let targetSide = null;
+                    if      (prev === 'tiled-left'  && !prevLayout.left)  targetSide = 'left';
+                    else if (prev === 'tiled-right' && !prevLayout.right) targetSide = 'right';
+
+                    if (targetSide) {
+                        LOG('← unmaximized: returning to ws', prevWsIdx, 'side', targetSide);
+                        this._moving.add(win);
+                        info.state = `tiled-${targetSide}`;
+                        win.change_workspace_by_index(prevWsIdx, false);
+                        prevWs.activate(global.get_current_time());
+                        this._defer(() => {
+                            this._moving.delete(win);
+                            if (this._windows.has(win))
+                                this._tileWindow(win, targetSide);
+                        });
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Default: restore to pre-maximize state on current workspace.
         if (prev === 'tiled-left' || prev === 'tiled-right') {
             const side   = prev === 'tiled-left' ? 'left' : 'right';
             const layout = this._getLayout(info.layoutKey);
@@ -733,6 +776,16 @@ export default class BorshevikWorkspaceManager extends Extension {
         this._restoreInitialState(win);
     }
 
+    /** Returns true if there are any other tracked windows on this ws:monitor (excluding win itself). */
+    _hasOtherWindows(layoutKey, excludeWin) {
+        for (const [w, wi] of this._windows) {
+            if (w === excludeWin) continue;
+            if (wi.layoutKey !== layoutKey) continue;
+            return true;
+        }
+        return false;
+    }
+
     /** Returns true if there's a fullscreen or maximized window on this ws:monitor (excluding win itself). */
     _hasBlockingWindow(layoutKey, excludeWin) {
         const [wsIdxStr, monIdxStr] = layoutKey.split(':');
@@ -820,8 +873,17 @@ export default class BorshevikWorkspaceManager extends Extension {
 
         this._defer(() => {
             this._moving.delete(win);
-            if (this._windows.has(win))
-                this._restoreInitialState(win);
+            if (this._windows.has(win)) {
+                const info = this._windows.get(win);
+                if (win.maximized_horizontally && win.maximized_vertically) {
+                    // Window arrived already maximized (e.g. tiled→maximize path).
+                    // Just register the state — do NOT call _restoreInitialState which
+                    // would run _doMaximize and clobber the saved preMaxState.
+                    if (info.state !== 'maximized') info.state = 'maximized';
+                } else {
+                    this._restoreInitialState(win);
+                }
+            }
             this._finishMove(win);
         });
     }
