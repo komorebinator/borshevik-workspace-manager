@@ -10,7 +10,7 @@ import Gio  from 'gi://Gio';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
-const LOG    = (...a) => console.log('[BWM]', ...a);
+let   LOG    = () => {};   // enabled by debug-logging setting
 const SNAP_PX        = 32;
 const DRAG_THRESHOLD = 20;  // px cursor must travel before snap zones activate
 
@@ -20,6 +20,13 @@ export default class BorshevikWorkspaceManager extends Extension {
 
     enable() {
         this._settings = this.getSettings();
+
+        const updateLog = () => {
+            LOG = this._settings.get_boolean('debug-logging')
+                ? (...a) => console.log('[BWM]', ...a) : () => {};
+        };
+        updateLog();
+        this._moveWhenMax = this._settings.get_boolean('move-window-when-maximized');
 
         // MetaWindow → { state, preMaxState, floatRect, layoutKey }
         this._windows = new Map();
@@ -74,6 +81,10 @@ export default class BorshevikWorkspaceManager extends Extension {
             [global.display,           global.display.connect('grab-op-begin', (_, w, op) => this._onGrabBegin(w, op))],
             [global.display,           global.display.connect('grab-op-end',   (_, w, op) => this._onGrabEnd(w, op))],
             [global.workspace_manager, global.workspace_manager.connect('workspace-removed', () => this._rebuildLayouts())],
+            [this._settings,           this._settings.connect('changed::move-window-when-maximized', () => {
+                this._moveWhenMax = this._settings.get_boolean('move-window-when-maximized');
+            })],
+            [this._settings,           this._settings.connect('changed::debug-logging', updateLog)],
         ];
     }
 
@@ -204,7 +215,7 @@ export default class BorshevikWorkspaceManager extends Extension {
         win.connect('notify::maximized-horizontally', () => this._onMaximizeChange(win));
         win.connect('notify::maximized-vertically',   () => this._onMaximizeChange(win));
 
-        if (!this._settings.get_boolean('move-window-when-maximized')) return;
+        if (!this._moveWhenMax) return;
         this._pendingBatch.add(win);
         this._scheduleBatch();
     }
@@ -288,7 +299,7 @@ export default class BorshevikWorkspaceManager extends Extension {
         if (this._moving.has(win)) return;
         // User manually moved the window — respect their choice, only tile if a slot is free.
         // Never force-move to a new workspace.
-        if (this._settings.get_boolean('move-window-when-maximized'))
+        if (this._moveWhenMax)
             this._defer(() => this._tileIntoFreeSlot(win));
     }
 
@@ -299,7 +310,11 @@ export default class BorshevikWorkspaceManager extends Extension {
 
         const full = win.maximized_horizontally && win.maximized_vertically;
 
-        if (full && info.state !== 'maximized') {
+        // notify::maximized-h and notify::maximized-v both fire for one maximize op.
+        // Skip if the state already matches — the second signal is always a no-op.
+        if (full === (info.state === 'maximized')) return;
+
+        if (full) {
             if (info.state === 'floating')
                 info.floatRect = this._toRect(win.get_frame_rect());
             info.preMaxState = info.state;
@@ -309,13 +324,9 @@ export default class BorshevikWorkspaceManager extends Extension {
             // Window maximized and there are other windows on this workspace →
             // give it its own workspace. preMaxState is preserved so _onUnmaximized
             // can return it to the correct side (or float) on the previous workspace.
-            if (this._settings.get_boolean('move-window-when-maximized')) {
-                const hasOthers = this._hasOtherWindows(info.layoutKey, win);
-                if (hasOthers)
-                    this._defer(() => this._moveToNewWorkspace(win));
-            }
-
-        } else if (!full && info.state === 'maximized') {
+            if (this._moveWhenMax && this._hasOtherWindows(info.layoutKey, win))
+                this._defer(() => this._moveToNewWorkspace(win));
+        } else {
             this._onUnmaximized(win, info);
         }
     }
@@ -336,7 +347,7 @@ export default class BorshevikWorkspaceManager extends Extension {
 
         // On an auto-created workspace: try to return to the previous workspace.
         // Prefer the side the window came from; fall back to any free slot.
-        if (this._settings.get_boolean('move-window-when-maximized')) {
+        if (this._moveWhenMax) {
             const currentWs = win.get_workspace();
             if (currentWs && this._ourWorkspaces.has(currentWs)) {
                 const prevWsIdx = currentWs.index() - 1;
@@ -738,15 +749,16 @@ export default class BorshevikWorkspaceManager extends Extension {
 
         const layout = this._getLayout(info.layoutKey);
 
-        // Count windows already handled (placed) on this ws:monitor, excluding this one.
+        // Check whether any other window on this ws:monitor was already handled (placed).
         // We use _handled (not ws.list_windows()) so simultaneously-mapped windows
         // don't incorrectly see each other as "existing content" before any have been placed.
-        const existingHandled = [];
+        let hasExistingHandled = false;
         for (const [w, wi] of this._windows) {
             if (w === win) continue;
             if (!this._handled.has(w)) continue;
             if (wi.layoutKey !== info.layoutKey) continue;
-            existingHandled.push(w);
+            hasExistingHandled = true;
+            break;
         }
 
         const winIsBlocking = win.fullscreen ||
@@ -758,10 +770,10 @@ export default class BorshevikWorkspaceManager extends Extension {
 
         LOG('handleNewWindow:', win.get_wm_class(), `key=${info.layoutKey}`,
             `left=${layout.left?.get_wm_class() ?? '-'} right=${layout.right?.get_wm_class() ?? '-'}`,
-            `existing=${existingHandled.length} slots=${slotsUsed} blocking=${winIsBlocking}`);
+            `existing=${hasExistingHandled} slots=${slotsUsed} blocking=${winIsBlocking}`);
 
         // Blocking conditions → send to new workspace.
-        if (hasBlocker || slotsUsed >= 2 || (winIsBlocking && existingHandled.length > 0)) {
+        if (hasBlocker || slotsUsed >= 2 || (winIsBlocking && hasExistingHandled)) {
             this._moveToNewWorkspace(win);
             return;
         }
