@@ -13,6 +13,7 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 let   LOG    = () => {};   // enabled by debug-logging setting
 const SNAP_PX        = 32;
 const DRAG_THRESHOLD = 20;  // px cursor must travel before snap zones activate
+const MERGE_THRESHOLD = 0.30; // max fractional width mismatch allowed for tile merging
 
 export default class BorshevikWorkspaceManager extends Extension {
 
@@ -56,8 +57,9 @@ export default class BorshevikWorkspaceManager extends Extension {
         // (~150 ms) and process them together. This ensures Chrome "restore windows" and
         // similar multi-window sessions are seen as a batch, with each window's final
         // size/state already applied before we decide on placement.
-        this._pendingBatch = new Set();
-        this._batchTimer   = null;
+        this._pendingBatch  = new Set();
+        this._batchTimer    = null;
+        this._currentBatch  = null;  // Set<MetaWindow> of the batch being flushed right now
 
         // Move-drag state
         this._drag        = null;   // { win, monitor }
@@ -80,6 +82,7 @@ export default class BorshevikWorkspaceManager extends Extension {
             [global.window_manager,    global.window_manager.connect('map', (_, act) => this._onMap(act))],
             [global.display,           global.display.connect('grab-op-begin', (_, w, op) => this._onGrabBegin(w, op))],
             [global.display,           global.display.connect('grab-op-end',   (_, w, op) => this._onGrabEnd(w, op))],
+            [global.display,           global.display.connect('notify::focus-window', () => this._onFocusChanged())],
             [global.workspace_manager, global.workspace_manager.connect('workspace-removed', () => this._rebuildLayouts())],
             [this._settings,           this._settings.connect('changed::move-window-when-maximized', () => {
                 this._moveWhenMax = this._settings.get_boolean('move-window-when-maximized');
@@ -178,7 +181,12 @@ export default class BorshevikWorkspaceManager extends Extension {
         const win = act.meta_window;
         if (!this._isRelevant(win)) return;
 
-        LOG('map:', win.get_wm_class(), `ws=${win.get_workspace().index()} mon=${win.get_monitor()}`);
+        const r0 = win.get_frame_rect();
+        LOG('map:', win.get_wm_class(),
+            `ws=${win.get_workspace().index()} mon=${win.get_monitor()}`,
+            `max=${win.maximized_horizontally && win.maximized_vertically}`,
+            `fs=${win.fullscreen}`,
+            `size=${r0.width}x${r0.height}`);
 
         const info = {
             state:           'floating',
@@ -214,6 +222,7 @@ export default class BorshevikWorkspaceManager extends Extension {
         win.connect('workspace-changed', () => this._onWorkspaceChanged(win));
         win.connect('notify::maximized-horizontally', () => this._onMaximizeChange(win));
         win.connect('notify::maximized-vertically',   () => this._onMaximizeChange(win));
+        win.connect('notify::fullscreen',             () => this._onMaximizeChange(win));
 
         if (!this._moveWhenMax) return;
         this._pendingBatch.add(win);
@@ -234,26 +243,39 @@ export default class BorshevikWorkspaceManager extends Extension {
     _flushBatch() {
         const wins = [...this._pendingBatch];
         this._pendingBatch.clear();
+        // Store the current batch so _handleNewWindow can distinguish
+        // "opened simultaneously with me" (skip) from "pre-existing" (count).
+        this._currentBatch = new Set(wins);
         LOG(`flushBatch: ${wins.length} window(s)`);
         for (const win of wins) {
             if (this._windows.has(win))
                 this._handleNewWindow(win);
         }
+        this._currentBatch = null;
     }
 
     _onUnmanaged(win) {
         LOG('unmanaged:', win.get_wm_class());
-        // Capture workspace object now, before we delete the window from our map.
-        const layoutKey = this._windows.get(win)?.layoutKey;
+        // Capture info now, before we delete the window from our map.
+        const info      = this._windows.get(win);
+        const layoutKey = info?.layoutKey;
+        const closedSide = info?.state === 'tiled-left'  ? 'left'
+                         : info?.state === 'tiled-right' ? 'right' : null;
         const ws = layoutKey
             ? global.workspace_manager.get_workspace_by_index(parseInt(layoutKey.split(':')[0]))
             : null;
+        const wsIdx = ws ? ws.index() : -1;
+        const mon   = layoutKey ? parseInt(layoutKey.split(':')[1]) : -1;
+
         this._removeFromLayout(win);
         this._windows.delete(win);
         this._handled.delete(win);
         this._pendingBatch.delete(win);
+
         if (ws)
             this._defer(() => this._leaveIfEmpty(ws));
+        if (closedSide !== null && wsIdx >= 0 && mon >= 0)
+            this._defer(() => this._collapseIfPossible(wsIdx, closedSide, mon));
     }
 
     _leaveIfEmpty(ws) {
@@ -308,7 +330,7 @@ export default class BorshevikWorkspaceManager extends Extension {
         const info = this._windows.get(win);
         if (!info) return;
 
-        const full = win.maximized_horizontally && win.maximized_vertically;
+        const full = win.fullscreen || (win.maximized_horizontally && win.maximized_vertically);
 
         // notify::maximized-h and notify::maximized-v both fire for one maximize op.
         // Skip if the state already matches — the second signal is always a no-op.
@@ -583,8 +605,9 @@ export default class BorshevikWorkspaceManager extends Extension {
 
     // ── Core window ops ──────────────────────────────────────────────────────
 
-    /** Tile win to side, swapping the current occupant if the side is taken. */
-    _tileWindow(win, side) {
+    /** Tile win to side. If target side is taken, displaces the occupant.
+     *  overrideW sets a custom tile width (null = half screen). */
+    _tileWindow(win, side, overrideW = null) {
         const info = this._windows.get(win);
         if (!info) return;
 
@@ -600,16 +623,18 @@ export default class BorshevikWorkspaceManager extends Extension {
         if (occupant && occupant !== win) {
             const other = side === 'left' ? 'right' : 'left';
             if (layout[other]) {
-                // Both sides occupied — send to new workspace instead of corrupting layout
-                this._moveToNewWorkspace(win);
-                return;
+                // Both sides occupied — displace the occupant of our target side.
+                // New window takes the slot; occupant tries to merge into ws+1 or gets a new ws.
+                this._displaceTile(occupant, side, win.get_monitor());
+                layout[side] = null;
+            } else {
+                // Other side is free — swap occupant there.
+                // Set state BEFORE _doTile so the applyGeometry guard sees 'tiled-*'.
+                const oi = this._windows.get(occupant);
+                if (oi) oi.state = `tiled-${other}`;
+                layout[other] = occupant;
+                this._doTile(occupant, other, wa);
             }
-            // Swap: push occupant to the other side.
-            // Set state BEFORE _doTile so the applyGeometry guard inside sees 'tiled-*'.
-            const oi = this._windows.get(occupant);
-            if (oi) oi.state = `tiled-${other}`;
-            layout[other] = occupant;
-            this._doTile(occupant, other, wa);
         }
 
         if (info.state === 'floating')
@@ -618,16 +643,16 @@ export default class BorshevikWorkspaceManager extends Extension {
         // Set state BEFORE _doTile so the applyGeometry guard inside sees 'tiled-*'.
         info.state   = `tiled-${side}`;
         layout[side] = win;
-        this._doTile(win, side, wa);
-        LOG('tile:', win.get_wm_class(), '→', side);
+        this._doTile(win, side, wa, overrideW);
+        LOG('tile:', win.get_wm_class(), '→', side, overrideW !== null ? `w=${overrideW}` : '');
     }
 
     /** Raw geometry tile — no state or layout updates. */
-    _doTile(win, side, wa = null) {
+    _doTile(win, side, wa = null, overrideW = null) {
         if (!wa) wa = win.get_work_area_current_monitor();
         const half = Math.floor(wa.width / 2);
-        const x    = side === 'left' ? wa.x : wa.x + half;
-        const w    = side === 'left' ? half : wa.width - half;
+        const w    = overrideW !== null ? overrideW : (side === 'left' ? half : wa.width - half);
+        const x    = side === 'left' ? wa.x : wa.x + wa.width - w;
 
         const hadState = win.fullscreen || win.maximized_horizontally || win.maximized_vertically;
 
@@ -749,15 +774,17 @@ export default class BorshevikWorkspaceManager extends Extension {
 
         const layout = this._getLayout(info.layoutKey);
 
-        // Check whether any other window on this ws:monitor was already handled (placed).
-        // We use _handled (not ws.list_windows()) so simultaneously-mapped windows
-        // don't incorrectly see each other as "existing content" before any have been placed.
-        let hasExistingHandled = false;
+        // Check whether any other window on this ws:monitor already exists.
+        // We count all tracked windows EXCEPT those that opened in the same batch and
+        // haven't been processed yet — those "don't exist yet" from our perspective.
+        // This handles both pre-existing windows (not in _handled) and previous batches.
+        let hasExistingOther = false;
         for (const [w, wi] of this._windows) {
             if (w === win) continue;
-            if (!this._handled.has(w)) continue;
             if (wi.layoutKey !== info.layoutKey) continue;
-            hasExistingHandled = true;
+            // Same batch but not yet processed → skip (it opened simultaneously with us)
+            if (this._currentBatch?.has(w) && !this._handled.has(w)) continue;
+            hasExistingOther = true;
             break;
         }
 
@@ -765,26 +792,21 @@ export default class BorshevikWorkspaceManager extends Extension {
             (win.maximized_horizontally && win.maximized_vertically) ||
             info.state === 'maximized';
 
-        const hasBlocker = this._hasBlockingWindow(info.layoutKey, win);
-        const slotsUsed  = (layout.left ? 1 : 0) + (layout.right ? 1 : 0);
+        const slotsUsed = (layout.left ? 1 : 0) + (layout.right ? 1 : 0);
 
         LOG('handleNewWindow:', win.get_wm_class(), `key=${info.layoutKey}`,
             `left=${layout.left?.get_wm_class() ?? '-'} right=${layout.right?.get_wm_class() ?? '-'}`,
-            `existing=${hasExistingHandled} slots=${slotsUsed} blocking=${winIsBlocking}`);
+            `existing=${hasExistingOther} slots=${slotsUsed} blocking=${winIsBlocking}`);
 
-        // Blocking conditions → send to new workspace.
-        if (hasBlocker || slotsUsed >= 2 || (winIsBlocking && hasExistingHandled)) {
+        // Maximized/fullscreen new windows that would cover existing content → new workspace.
+        if (winIsBlocking && (hasExistingOther || slotsUsed >= 1)) {
             this._moveToNewWorkspace(win);
             return;
         }
 
-        // One tiled slot taken → fill the other
-        if (layout.left || layout.right) {
-            this._tileWindow(win, layout.left ? 'right' : 'left');
-            return;
-        }
-
-        // No tiled windows and no reason to move — just place based on geometry
+        // All other windows (including floating): use _restoreInitialState.
+        // Tall windows get auto-tiled; floating windows stay floating.
+        // _onFocusChanged will relocate covered floaters later.
         this._restoreInitialState(win);
     }
 
@@ -796,24 +818,6 @@ export default class BorshevikWorkspaceManager extends Extension {
             return true;
         }
         return false;
-    }
-
-    /** Returns true if there's a fullscreen or maximized window on this ws:monitor (excluding win itself). */
-    _hasBlockingWindow(layoutKey, excludeWin) {
-        const [wsIdxStr, monIdxStr] = layoutKey.split(':');
-        const wsIdx  = parseInt(wsIdxStr);
-        const monIdx = parseInt(monIdxStr);
-        const ws = global.workspace_manager.get_workspace_by_index(wsIdx);
-        if (!ws) return false;
-        return ws.list_windows().some(w => {
-            if (w === excludeWin) return false;
-            if (!this._isRelevant(w)) return false;
-            if (w.get_monitor() !== monIdx) return false;
-            if (w.is_always_on_all_workspaces()) return false;
-            if (w.fullscreen) return true;
-            const info = this._windows.get(w);
-            return info?.state === 'maximized';
-        });
     }
 
     _restoreInitialState(win) {
@@ -828,25 +832,369 @@ export default class BorshevikWorkspaceManager extends Extension {
 
         if (wr > 0.9 && hr > 0.9) {
             this._doMaximize(win);
-        } else if (hr > 0.9 && wr >= 0.4 && wr <= 0.6) {
-            this._tileWindow(win, 'left');
+        } else if (hr > 0.9 && wr >= 0.2 && wr <= 0.8) {
+            // Tall window — tile with its own width (capped at 80% of work area)
+            const customW = Math.min(rect.width, Math.floor(wa.width * 0.8));
+            const side    = (rect.x + rect.width / 2) > (wa.x + wa.width / 2) ? 'right' : 'left';
+            const layout  = this._getLayout(this._windows.get(win)?.layoutKey ?? '');
+            const other   = side === 'left' ? 'right' : 'left';
+            // Only tile if at least one side is free
+            if (!layout[side] || !layout[other]) {
+                this._tileWindow(win, side, customW);
+            }
         }
         // otherwise leave floating
     }
 
-    _moveToNewWorkspace(win) {
+    // ── Covered-floater relocation ───────────────────────────────────────────
+
+    _onFocusChanged() {
+        if (!this._moveWhenMax) return;
+        // Defer: notify::focus-window fires before Mutter updates the stacking order.
+        // By the time the idle callback runs, sort_windows_by_stacking reflects the new Z-order.
+        this._defer(() => {
+            const focused = global.display.focus_window;
+            if (!focused) return;
+            const ws = focused.get_workspace();
+            if (!ws) return;
+            const key = `${ws.index()}:${focused.get_monitor()}`;
+            LOG('focus-changed:', focused.get_wm_class(), 'key=', key);
+            this._checkCoveredFloaters(key);
+        });
+    }
+
+    /** Check all floating windows on key and relocate any that intersect covering windows. */
+    _checkCoveredFloaters(key) {
+        if (!this._moveWhenMax) return;
+
+        const [wsIdxStr, monIdxStr] = key.split(':');
+        const wsIdx = parseInt(wsIdxStr);
+        const mon   = parseInt(monIdxStr);
+        const ws    = global.workspace_manager.get_workspace_by_index(wsIdx);
+        if (!ws) return;
+
+        // Collect covering windows on this key
+        const coveringWins = [];
+        for (const [win, wi] of this._windows) {
+            if (wi.layoutKey !== key) continue;
+            if (win.fullscreen || wi.state === 'maximized' || wi.state?.startsWith('tiled'))
+                coveringWins.push(win);
+        }
+        LOG('checkCoveredFloaters key=', key, 'covering=', coveringWins.map(w => w.get_wm_class()));
+        if (coveringWins.length === 0) return;
+
+        // Get work area from a tracked window on this key
+        let wa = null;
+        for (const [w, wi] of this._windows) {
+            if (wi.layoutKey === key) { wa = w.get_work_area_for_monitor(mon); break; }
+        }
+        if (!wa) return;
+
+        const freeArea = this._getFreeArea(key, wa);
+        const focused  = global.display.focus_window;
+
+        const coveredFloaters = [];
+        for (const [floatWin, wi] of this._windows) {
+            if (wi.layoutKey !== key) continue;
+            if (wi.state !== 'floating') continue;
+            if (floatWin === focused) continue;
+            if (floatWin.above) continue;
+            if (floatWin.is_always_on_all_workspaces()) continue;
+            if (this._moving.has(floatWin)) continue;
+            const parent = floatWin.get_transient_for();
+            if (parent && this._windows.get(parent)?.layoutKey === key) continue;
+
+            const floatRect = floatWin.get_frame_rect();
+            const covered = coveringWins.some(cw => this._intersects(floatRect, cw.get_frame_rect()));
+            LOG('  floater:', floatWin.get_wm_class(), 'covered=', covered);
+            if (covered) coveredFloaters.push(floatWin);
+        }
+
+        if (coveredFloaters.length === 0) return;
+        LOG('covered floaters:', coveredFloaters.map(w => w.get_wm_class()));
+
+        const needNewWs = [];
+        for (const floatWin of coveredFloaters) {
+            const relocated = this._tryRelocateOnSameWs(floatWin, freeArea) ||
+                              this._tryRelocateOnPrevWs(floatWin, wsIdx, mon);
+            if (!relocated) needNewWs.push(floatWin);
+        }
+
+        if (needNewWs.length > 0)
+            this._moveBatchToNewWorkspace(needNewWs);
+    }
+
+    /** True if rectangles a and b overlap (even by 1px). */
+    _intersects(a, b) {
+        return a.x < b.x + b.width  &&
+               a.x + a.width  > b.x &&
+               a.y < b.y + b.height &&
+               a.y + a.height > b.y;
+    }
+
+    /** Returns the free rect on this key (area not occupied by covering windows), or null. */
+    _getFreeArea(key, wa) {
+        // fullscreen or maximized → no free area
+        for (const [win, wi] of this._windows) {
+            if (wi.layoutKey !== key) continue;
+            if (win.fullscreen || wi.state === 'maximized') return null;
+        }
+
+        const layout    = this._getLayout(key);
+        const leftTile  = layout.left;
+        const rightTile = layout.right;
+
+        if (leftTile && rightTile) return null;  // both sides filled
+
+        if (leftTile) {
+            const r    = leftTile.get_frame_rect();
+            const xEnd = r.x + r.width;
+            return { x: xEnd, y: wa.y, width: (wa.x + wa.width) - xEnd, height: wa.height };
+        }
+        if (rightTile) {
+            const r = rightTile.get_frame_rect();
+            return { x: wa.x, y: wa.y, width: r.x - wa.x, height: wa.height };
+        }
+        return { x: wa.x, y: wa.y, width: wa.width, height: wa.height };
+    }
+
+    /** Try to move floatWin into the free area on its current workspace by shifting x. */
+    _tryRelocateOnSameWs(floatWin, freeArea) {
+        if (!freeArea || freeArea.width < 50) return false;
+        const rect  = floatWin.get_frame_rect();
+        const newX  = freeArea.x + Math.floor((freeArea.width - rect.width) / 2);
+        const clamp = Math.max(freeArea.x, Math.min(newX, freeArea.x + freeArea.width - rect.width));
+        LOG('relocate same ws:', floatWin.get_wm_class(), `x: ${rect.x} → ${clamp}`);
+        this._suppress.add(floatWin);
+        floatWin.move_frame(true, clamp, rect.y);
+        this._suppress.delete(floatWin);
+        return true;
+    }
+
+    /** Try to move floatWin to the previous workspace into its free area. */
+    _tryRelocateOnPrevWs(floatWin, wsIdx, mon) {
+        if (wsIdx <= 0) return false;
+        const prevWsIdx = wsIdx - 1;
+        const prevKey   = `${prevWsIdx}:${mon}`;
+        const prevWs    = global.workspace_manager.get_workspace_by_index(prevWsIdx);
+        if (!prevWs) return false;
+
+        // Get work area from a tracked window on prev ws
+        let wa = null;
+        for (const [w, wi] of this._windows) {
+            if (wi.layoutKey === prevKey) { wa = w.get_work_area_for_monitor(mon); break; }
+        }
+        if (!wa) {
+            const wins = prevWs.list_windows().filter(w => w.get_monitor() === mon);
+            if (wins.length > 0) wa = wins[0].get_work_area_for_monitor(mon);
+        }
+        if (!wa) return false;
+
+        const prevFree = this._getFreeArea(prevKey, wa);
+        if (!prevFree || prevFree.width < 50) return false;
+
+        const rect  = floatWin.get_frame_rect();
+        const info  = this._windows.get(floatWin);
+        if (!info) return false;
+
+        const newX  = prevFree.x + Math.floor((prevFree.width - rect.width) / 2);
+        const clamp = Math.max(prevFree.x, Math.min(newX, prevFree.x + prevFree.width - rect.width));
+        LOG('relocate prev ws:', floatWin.get_wm_class(), `ws${wsIdx}→ws${prevWsIdx} x=${clamp}`);
+
+        this._moving.add(floatWin);
+        info.layoutKey = prevKey;
+        floatWin.change_workspace_by_index(prevWsIdx, false);
+        this._defer(() => {
+            this._moving.delete(floatWin);
+            if (!this._windows.has(floatWin)) return;
+            this._suppress.add(floatWin);
+            floatWin.move_frame(true, clamp, rect.y);
+            this._suppress.delete(floatWin);
+        });
+        return true;
+    }
+
+    // ── Tile displacement & workspace collapsing ─────────────────────────────
+
+    /** True if all windows on wsIdx:mon (excluding excludeWin) are tracked tiles (no floaters). */
+    _wsIsClean(wsIdx, mon, excludeWin) {
+        const ws = global.workspace_manager.get_workspace_by_index(wsIdx);
+        if (!ws) return false;
+        const wins = ws.list_windows().filter(w =>
+            w.get_monitor() === mon &&
+            !w.is_always_on_all_workspaces() &&
+            !w.minimized &&
+            this._isRelevant(w) &&
+            w !== excludeWin
+        );
+        for (const w of wins) {
+            const wi = this._windows.get(w);
+            if (!wi) return false;  // untracked window on this workspace
+            if (wi.state !== 'tiled-left' && wi.state !== 'tiled-right') return false;
+        }
+        return true;
+    }
+
+    /** True if tileWin (currently on side) can merge into targetWsIdx on the same side. */
+    _canMergeInto(tileWin, side, targetWsIdx, mon) {
+        const targetKey    = `${targetWsIdx}:${mon}`;
+        const targetLayout = this._getLayout(targetKey);
+        const other        = side === 'left' ? 'right' : 'left';
+
+        // Target must have partner on other side and our side free
+        if (!targetLayout[other]) return false;
+        if (targetLayout[side])   return false;
+
+        // Both workspaces must be clean
+        const srcWsIdx = tileWin.get_workspace()?.index() ?? -1;
+        if (!this._wsIsClean(srcWsIdx, mon, tileWin))   return false;
+        if (!this._wsIsClean(targetWsIdx, mon, null))   return false;
+
+        // Width compatibility: |tileW + partnerW − screenW| ≤ 30% of screenW
+        const wa       = tileWin.get_work_area_for_monitor(mon);
+        const tileW    = tileWin.get_frame_rect().width;
+        const partnerW = targetLayout[other].get_frame_rect().width;
+        if (Math.abs(tileW + partnerW - wa.width) > wa.width * MERGE_THRESHOLD) return false;
+
+        return true;
+    }
+
+    /** Displace occupant from its tile slot: merge into ws+1 if possible, else new workspace. */
+    _displaceTile(occupant, side, mon) {
+        const info = this._windows.get(occupant);
+        if (!info) return;
+
+        const manager   = global.workspace_manager;
+        const srcWsIdx  = occupant.get_workspace()?.index() ?? -1;
+        const nextWsIdx = srcWsIdx + 1;
+
+        if (nextWsIdx < manager.get_n_workspaces() &&
+            this._canMergeInto(occupant, side, nextWsIdx, mon)) {
+
+            const occupantW  = occupant.get_frame_rect().width;
+            const nextKey    = `${nextWsIdx}:${mon}`;
+            const nextLayout = this._getLayout(nextKey);
+            const other      = side === 'left' ? 'right' : 'left';
+
+            this._removeFromLayout(occupant);
+            this._moving.add(occupant);
+            info.state     = `tiled-${side}`;
+            info.layoutKey = nextKey;
+            occupant.change_workspace_by_index(nextWsIdx, false);
+            nextLayout[side] = occupant;
+
+            LOG('displaceTile: merging', occupant.get_wm_class(), `into ws${nextWsIdx} side=${side}`);
+            this._defer(() => {
+                this._moving.delete(occupant);
+                if (!this._windows.has(occupant)) return;
+                const wa       = occupant.get_work_area_for_monitor(mon);
+                const partnerW = wa.width - occupantW;
+                this._doTile(occupant, side, wa, occupantW);
+                const partner = nextLayout[other];
+                if (partner && this._windows.has(partner))
+                    this._doTile(partner, other, wa, partnerW);
+            });
+        } else {
+            // No merge — give occupant its own new workspace, tiling on same side
+            LOG('displaceTile: new ws for', occupant.get_wm_class(), `side=${side}`);
+            this._moveToNewWorkspace(occupant, side);
+        }
+    }
+
+    /** After a tile closes on wsIdx:closedSide, try to pull the matching tile from ws+1. */
+    _collapseIfPossible(wsIdx, closedSide, mon) {
+        const manager   = global.workspace_manager;
+        const nextWsIdx = wsIdx + 1;
+        if (nextWsIdx >= manager.get_n_workspaces()) return;
+
+        const key        = `${wsIdx}:${mon}`;
+        const layout     = this._getLayout(key);
+        const nextKey    = `${nextWsIdx}:${mon}`;
+        const nextLayout = this._getLayout(nextKey);
+        const other      = closedSide === 'left' ? 'right' : 'left';
+
+        // Our side must still be free and next ws must have a tile on same side
+        if (layout[closedSide]) return;
+        const candidate = nextLayout[closedSide];
+        if (!candidate)  return;
+
+        if (!this._canMergeInto(candidate, closedSide, wsIdx, mon)) return;
+
+        const candidateInfo = this._windows.get(candidate);
+        if (!candidateInfo) return;
+
+        const candidateW = candidate.get_frame_rect().width;
+        this._removeFromLayout(candidate);
+        this._moving.add(candidate);
+        candidateInfo.state    = `tiled-${closedSide}`;
+        candidateInfo.layoutKey = key;
+        candidate.change_workspace_by_index(wsIdx, false);
+        layout[closedSide] = candidate;
+
+        LOG('collapseIfPossible: pulling', candidate.get_wm_class(), `from ws${nextWsIdx} into ws${wsIdx}`);
+        this._defer(() => {
+            this._moving.delete(candidate);
+            if (!this._windows.has(candidate)) return;
+            const wa      = candidate.get_work_area_for_monitor(mon);
+            const partner = layout[other];
+            if (partner && this._windows.has(partner)) {
+                const partnerW = partner.get_frame_rect().width;
+                this._doTile(candidate, closedSide, wa, wa.width - partnerW);
+                this._doTile(partner,   other,       wa, partnerW);
+            } else {
+                this._doTile(candidate, closedSide, wa, candidateW);
+            }
+        });
+    }
+
+    /** Move a batch of windows to a single newly-created workspace.
+     *  If a workspace move is already in flight, defers until it completes. */
+    _moveBatchToNewWorkspace(wins) {
+        if (wins.length === 0) return;
+
+        const manager    = global.workspace_manager;
+        const currentIdx = manager.get_active_workspace_index();
+        const newIdx     = currentIdx;  // insert LEFT of current workspace
+
+        manager.append_new_workspace(false, global.get_current_time());
+        manager.reorder_workspace(
+            manager.get_workspace_by_index(manager.get_n_workspaces() - 1),
+            newIdx
+        );
+        this._ourWorkspaces.add(manager.get_workspace_by_index(newIdx));
+        this._rebuildLayouts();
+
+        for (const win of wins) {
+            if (!this._windows.has(win)) continue;
+            const info = this._windows.get(win);
+            const mon  = win.get_monitor();
+            this._moving.add(win);
+            win.change_workspace_by_index(newIdx, false);
+            if (info) info.layoutKey = `${newIdx}:${mon}`;
+        }
+
+        // Don't activate — covered floaters fly away silently; user stays on current workspace.
+        this._defer(() => {
+            for (const win of wins) this._moving.delete(win);
+        });
+    }
+
+    /** Move win to a new workspace to the right of current.
+     *  tileOnArrive: 'left'|'right'|null — if set, tile on that side upon arrival
+     *  instead of activating the new workspace. */
+    _moveToNewWorkspace(win, tileOnArrive = null) {
         // Serialise: if another move is in flight, queue and process after it completes
         if (this._moveInFlight) {
             LOG('moveToNewWorkspace: queued', win.get_wm_class());
-            this._moveQueue.push(win);
+            this._moveQueue.push({ win, tileOnArrive });
             return;
         }
         this._moveInFlight = true;
-        this._doMoveToNewWorkspace(win);
+        this._doMoveToNewWorkspace(win, tileOnArrive);
     }
 
-    _doMoveToNewWorkspace(win) {
-        LOG('moveToNewWorkspace:', win.get_wm_class());
+    _doMoveToNewWorkspace(win, tileOnArrive = null) {
+        LOG('moveToNewWorkspace:', win.get_wm_class(), tileOnArrive ? `tileOnArrive=${tileOnArrive}` : '');
 
         // Guard: sticky windows can't be moved — Mutter silently ignores the call,
         // leaving an orphan empty workspace. Skip them entirely.
@@ -878,16 +1226,22 @@ export default class BorshevikWorkspaceManager extends Extension {
         const info = this._windows.get(win);
         if (info) info.layoutKey = `${newIdx}:${monitor}`;
 
-        const fullscreen = oldWs.list_windows()
-            .some(w => w.fullscreen && w.get_monitor() === monitor && w !== win);
-        if (!fullscreen)
-            manager.get_workspace_by_index(newIdx).activate(global.get_current_time());
+        // When tiling on arrival, stay on current workspace (user doesn't follow displaced tile).
+        // Otherwise activate the new workspace so the user follows their window.
+        if (!tileOnArrive) {
+            const fullscreen = oldWs.list_windows()
+                .some(w => w.fullscreen && w.get_monitor() === monitor && w !== win);
+            if (!fullscreen)
+                manager.get_workspace_by_index(newIdx).activate(global.get_current_time());
+        }
 
         this._defer(() => {
             this._moving.delete(win);
             if (this._windows.has(win)) {
                 const info = this._windows.get(win);
-                if (win.maximized_horizontally && win.maximized_vertically) {
+                if (tileOnArrive) {
+                    this._tileWindow(win, tileOnArrive);
+                } else if (win.maximized_horizontally && win.maximized_vertically) {
                     // Window arrived already maximized (e.g. tiled→maximize path).
                     // Just register the state — do NOT call _restoreInitialState which
                     // would run _doMaximize and clobber the saved preMaxState.
@@ -903,10 +1257,10 @@ export default class BorshevikWorkspaceManager extends Extension {
     _finishMove(_win) {
         this._moveInFlight = false;
         if (this._moveQueue.length > 0) {
-            const next = this._moveQueue.shift();
+            const { win: next, tileOnArrive } = this._moveQueue.shift();
             if (this._windows.has(next)) {
                 this._moveInFlight = true;
-                this._doMoveToNewWorkspace(next);
+                this._doMoveToNewWorkspace(next, tileOnArrive);
             } else {
                 this._finishMove(null);  // window closed while queued, skip to next
             }
