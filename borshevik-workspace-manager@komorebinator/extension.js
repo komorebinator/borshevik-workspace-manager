@@ -48,6 +48,9 @@ export default class BorshevikWorkspaceManager extends Extension {
         this._moveQueue    = [];
         this._moveInFlight = false;
 
+        // Debounce timer for restacked signal (fires very frequently)
+        this._restackedTimer = null;
+
         // Windows that have already been through _handleNewWindow or _restoreInitialState.
         // Used to count "settled" windows when deciding placement for new arrivals — avoids
         // treating all simultaneously-mapped windows as "existing content".
@@ -82,7 +85,7 @@ export default class BorshevikWorkspaceManager extends Extension {
             [global.window_manager,    global.window_manager.connect('map', (_, act) => this._onMap(act))],
             [global.display,           global.display.connect('grab-op-begin', (_, w, op) => this._onGrabBegin(w, op))],
             [global.display,           global.display.connect('grab-op-end',   (_, w, op) => this._onGrabEnd(w, op))],
-            [global.display,           global.display.connect('notify::focus-window', () => this._onFocusChanged())],
+            [global.display,           global.display.connect('restacked', () => this._onRestacked())],
             [global.workspace_manager, global.workspace_manager.connect('workspace-removed', () => this._rebuildLayouts())],
             [this._settings,           this._settings.connect('changed::move-window-when-maximized', () => {
                 this._moveWhenMax = this._settings.get_boolean('move-window-when-maximized');
@@ -105,6 +108,11 @@ export default class BorshevikWorkspaceManager extends Extension {
             this._batchTimer = null;
         }
         this._pendingBatch.clear(); this._pendingBatch = null;
+
+        if (this._restackedTimer) {
+            GLib.source_remove(this._restackedTimer);
+            this._restackedTimer = null;
+        }
 
         this._preview.destroy();
         this._preview = null;
@@ -834,36 +842,41 @@ export default class BorshevikWorkspaceManager extends Extension {
             this._doMaximize(win);
         } else if (hr > 0.9 && wr >= 0.2 && wr <= 0.8) {
             // Tall window — tile with its own width (capped at 80% of work area)
-            const customW = Math.min(rect.width, Math.floor(wa.width * 0.8));
-            const side    = (rect.x + rect.width / 2) > (wa.x + wa.width / 2) ? 'right' : 'left';
-            const layout  = this._getLayout(this._windows.get(win)?.layoutKey ?? '');
-            const other   = side === 'left' ? 'right' : 'left';
-            // Only tile if at least one side is free
-            if (!layout[side] || !layout[other]) {
-                this._tileWindow(win, side, customW);
-            }
+            const customW     = Math.min(rect.width, Math.floor(wa.width * 0.8));
+            const preferred   = (rect.x + rect.width / 2) > (wa.x + wa.width / 2) ? 'right' : 'left';
+            const layout      = this._getLayout(this._windows.get(win)?.layoutKey ?? '');
+            const other       = preferred === 'left' ? 'right' : 'left';
+            // Prefer the free side to avoid displacing existing tiles.
+            // Fall back to preferred if it's free, or other if preferred is taken.
+            // Don't tile if both sides are already occupied.
+            const side = !layout[preferred] ? preferred : !layout[other] ? other : null;
+            if (side !== null) this._tileWindow(win, side, customW);
         }
         // otherwise leave floating
     }
 
     // ── Covered-floater relocation ───────────────────────────────────────────
 
-    _onFocusChanged() {
+    _onRestacked() {
         if (!this._moveWhenMax) return;
-        // Defer: notify::focus-window fires before Mutter updates the stacking order.
-        // By the time the idle callback runs, sort_windows_by_stacking reflects the new Z-order.
-        this._defer(() => {
-            const focused = global.display.focus_window;
-            if (!focused) return;
-            const ws = focused.get_workspace();
-            if (!ws) return;
-            const key = `${ws.index()}:${focused.get_monitor()}`;
-            LOG('focus-changed:', focused.get_wm_class(), 'key=', key);
-            this._checkCoveredFloaters(key);
+        // Debounce: restacked fires for every Z-order change, batch rapid events.
+        if (this._restackedTimer) return;
+        this._restackedTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 80, () => {
+            this._restackedTimer = null;
+            // Check all layout keys that have at least one covering window.
+            const keysToCheck = new Set();
+            for (const [win, wi] of this._windows) {
+                if (!wi.layoutKey) continue;
+                if (win.fullscreen || wi.state === 'maximized' || wi.state?.startsWith('tiled'))
+                    keysToCheck.add(wi.layoutKey);
+            }
+            for (const key of keysToCheck)
+                this._checkCoveredFloaters(key);
+            return GLib.SOURCE_REMOVE;
         });
     }
 
-    /** Check all floating windows on key and relocate any that intersect covering windows. */
+    /** Check all floating windows on key and relocate any that are covered by type-1 windows. */
     _checkCoveredFloaters(key) {
         if (!this._moveWhenMax) return;
 
@@ -873,7 +886,7 @@ export default class BorshevikWorkspaceManager extends Extension {
         const ws    = global.workspace_manager.get_workspace_by_index(wsIdx);
         if (!ws) return;
 
-        // Collect covering windows on this key
+        // Collect covering (type-1) windows on this key
         const coveringWins = [];
         for (const [win, wi] of this._windows) {
             if (wi.layoutKey !== key) continue;
@@ -883,30 +896,40 @@ export default class BorshevikWorkspaceManager extends Extension {
         LOG('checkCoveredFloaters key=', key, 'covering=', coveringWins.map(w => w.get_wm_class()));
         if (coveringWins.length === 0) return;
 
-        // Get work area from a tracked window on this key
+        // Get work area
         let wa = null;
         for (const [w, wi] of this._windows) {
             if (wi.layoutKey === key) { wa = w.get_work_area_for_monitor(mon); break; }
         }
         if (!wa) return;
 
+        // Z-order: bottom=0, top=last
+        const allWins = ws.list_windows().filter(w =>
+            w.get_monitor() === mon && !w.is_always_on_all_workspaces()
+        );
+        const sorted   = global.display.sort_windows_by_stacking(allWins);
         const freeArea = this._getFreeArea(key, wa);
-        const focused  = global.display.focus_window;
 
         const coveredFloaters = [];
         for (const [floatWin, wi] of this._windows) {
             if (wi.layoutKey !== key) continue;
             if (wi.state !== 'floating') continue;
-            if (floatWin === focused) continue;
             if (floatWin.above) continue;
             if (floatWin.is_always_on_all_workspaces()) continue;
             if (this._moving.has(floatWin)) continue;
             const parent = floatWin.get_transient_for();
             if (parent && this._windows.get(parent)?.layoutKey === key) continue;
 
+            const floatIdx = sorted.indexOf(floatWin);
+            if (floatIdx === -1) continue;
+
             const floatRect = floatWin.get_frame_rect();
-            const covered = coveringWins.some(cw => this._intersects(floatRect, cw.get_frame_rect()));
-            LOG('  floater:', floatWin.get_wm_class(), 'covered=', covered);
+            // Covered = type-1 window is above this floater in Z AND geometrically overlaps
+            const covered = coveringWins.some(cw => {
+                const cwIdx = sorted.indexOf(cw);
+                return cwIdx > floatIdx && this._intersects(floatRect, cw.get_frame_rect());
+            });
+            LOG('  floater:', floatWin.get_wm_class(), `z=${floatIdx} covered=${covered}`);
             if (covered) coveredFloaters.push(floatWin);
         }
 
@@ -940,9 +963,11 @@ export default class BorshevikWorkspaceManager extends Extension {
             if (win.fullscreen || wi.state === 'maximized') return null;
         }
 
-        const layout    = this._getLayout(key);
-        const leftTile  = layout.left;
-        const rightTile = layout.right;
+        // Use _layouts.get directly — _getLayout would create a phantom empty entry
+        // for workspaces not in our map, wrongly reporting the whole screen as free.
+        const layout    = this._layouts.get(key);
+        const leftTile  = layout?.left  ?? null;
+        const rightTile = layout?.right ?? null;
 
         if (leftTile && rightTile) return null;  // both sides filled
 
@@ -991,6 +1016,8 @@ export default class BorshevikWorkspaceManager extends Extension {
         if (!wa) return false;
 
         const prevFree = this._getFreeArea(prevKey, wa);
+        LOG('tryRelocatePrevWs:', floatWin.get_wm_class(),
+            `prevKey=${prevKey} prevFree=${JSON.stringify(prevFree)}`);
         if (!prevFree || prevFree.width < 50) return false;
 
         const rect  = floatWin.get_frame_rect();
