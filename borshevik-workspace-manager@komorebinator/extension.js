@@ -141,6 +141,21 @@ export default class BorshevikWorkspaceManager extends Extension {
     }
 
     _toRect(r)   { return { x: r.x, y: r.y, width: r.width, height: r.height }; }
+
+    _saveFloatSize(wmClass, wr, hr) {
+        try {
+            const map = JSON.parse(this._settings.get_string('float-sizes'));
+            map[wmClass] = { wr, hr };
+            this._settings.set_string('float-sizes', JSON.stringify(map));
+        } catch (_) {}
+    }
+
+    _loadFloatSize(wmClass) {
+        try {
+            const map = JSON.parse(this._settings.get_string('float-sizes'));
+            return map[wmClass] ?? null;
+        } catch (_) { return null; }
+    }
     _winKey(win) {
         const ws = win.get_workspace();
         if (!ws) return null;
@@ -200,7 +215,7 @@ export default class BorshevikWorkspaceManager extends Extension {
         const info = {
             state:           'floating',
             preMaxState:     null,
-            floatRect:       this._toRect(win.get_frame_rect()),
+            floatRect:       null,
             layoutKey:       this._winKey(win),
             firstFrameFired: false,
             pendingGeometry: null,   // { x, y, w, h } set by _doTile if first-frame not yet fired
@@ -443,20 +458,16 @@ export default class BorshevikWorkspaceManager extends Extension {
             // Mutter auto-unmaximizes windows when drag starts; our _onUnmaximized guard
             // (`if (this._drag?.win === win)`) must see _drag already set when that fires.
             const [startX, startY] = global.get_pointer();
-            this._drag = { win, monitor: win.get_monitor(), startX, startY };
+            this._drag = { win, monitor: win.get_monitor(), startX, startY, tiledSide: null };
 
             const info = this._windows.get(win);
 
-            // If tiled — immediately restore float size so window shrinks while dragging,
-            // not after drop. Keep top-left in place so Mutter's drag offset stays correct.
-            if ((info?.state === 'tiled-left' || info?.state === 'tiled-right') && info.floatRect) {
-                LOG('drag-begin: restore float size immediately', info.floatRect.width, 'x', info.floatRect.height);
-                this._removeFromLayout(win);
-                info.state = 'floating';
-                const cur = win.get_frame_rect();
-                this._suppress.add(win);
-                win.move_resize_frame(false, cur.x, cur.y, info.floatRect.width, info.floatRect.height);
-                this._suppress.delete(win);
+            // If tiled — remember which side, but don't detach yet.
+            // We detach lazily once the cursor crosses DRAG_THRESHOLD, so brief
+            // accidental clicks on the title bar don't cause an untile.
+            if (info?.state === 'tiled-left' || info?.state === 'tiled-right') {
+                this._drag.tiledSide = info.state === 'tiled-left' ? 'left' : 'right';
+                LOG('drag-begin: tiled-', this._drag.tiledSide, '— will detach at threshold');
             }
             // Use timeout_add (30fps) instead of idle_add: during Mutter grab-op,
             // DEFAULT_IDLE callbacks are starved and never fire.
@@ -514,6 +525,31 @@ export default class BorshevikWorkspaceManager extends Extension {
         let   snap = null;
         const dist = Math.hypot(cx - this._drag.startX, cy - this._drag.startY);
         if (dist >= DRAG_THRESHOLD) {
+            // Lazy detach: first time we cross the threshold for a tiled window, untile it now.
+            if (this._drag.tiledSide !== null) {
+                const info = this._windows.get(win);
+                if (info && (info.state === 'tiled-left' || info.state === 'tiled-right')) {
+                    LOG('drag: threshold crossed — detaching tile', win.get_wm_class());
+                    this._removeFromLayout(win);
+                    info.state = 'floating';
+                    if (!info.floatRect) {
+                        const saved = this._loadFloatSize(win.get_wm_class());
+                        if (saved) {
+                            const fr = win.get_frame_rect();
+                            info.floatRect = { x: fr.x, y: fr.y,
+                                width:  Math.round(wa.width  * saved.wr),
+                                height: Math.round(wa.height * saved.hr) };
+                        }
+                    }
+                    if (info.floatRect) {
+                        const cur = win.get_frame_rect();
+                        this._suppress.add(win);
+                        win.move_resize_frame(false, cur.x, cur.y, info.floatRect.width, info.floatRect.height);
+                        this._suppress.delete(win);
+                    }
+                }
+                this._drag.tiledSide = null;  // threshold crossed — won't re-dock on release
+            }
             if      (cx <= wa.x + SNAP_PX)              snap = 'left';
             else if (cx >= wa.x + wa.width - SNAP_PX)   snap = 'right';
             else if (cy <= wa.y + SNAP_PX)               snap = 'maximize';
@@ -551,18 +587,12 @@ export default class BorshevikWorkspaceManager extends Extension {
 
         if (!this._snapSide) {
             LOG('drag-end:', win.get_wm_class(), '(no snap)');
-            // If window was tiled, untile it — restore to floating size at current position
-            if (info.state === 'tiled-left' || info.state === 'tiled-right') {
-                LOG('drag-end: untile', win.get_wm_class(), 'restoring floatRect');
-                this._removeFromLayout(win);
-                info.state = 'floating';
-                if (info.floatRect) {
-                    const cur = win.get_frame_rect();
-                    this._suppress.add(win);
-                    win.move_resize_frame(false, cur.x, cur.y, info.floatRect.width, info.floatRect.height);
-                    this._suppress.delete(win);
-                }
+            // Threshold not reached — state/layout were never touched, nothing to do
+            if (this._drag.tiledSide !== null) {
+                LOG('drag-end: click-only, tile unchanged');
+                return;
             }
+            // Threshold was reached — window is already floating; nothing left to do
             return;
         }
 
@@ -575,10 +605,21 @@ export default class BorshevikWorkspaceManager extends Extension {
         }
 
         LOG('drag-end:', win.get_wm_class(), '→ snap', this._snapSide);
-        if (this._snapSide === 'maximize')
+        if (this._snapSide === 'maximize') {
             this._doMaximize(win);
-        else
+        } else {
+            // Save float size only if we have a genuine floatRect from this session.
+            // If floatRect is null, the window opened at tile-size and never had a real float
+            // history — saving it would overwrite a good previously-stored size.
+            const info2 = this._windows.get(win);
+            if (info2?.floatRect) {
+                const wa2 = win.get_work_area_for_monitor(this._drag.monitor);
+                this._saveFloatSize(win.get_wm_class(),
+                    info2.floatRect.width  / wa2.width,
+                    info2.floatRect.height / wa2.height);
+            }
             this._tileWindow(win, this._snapSide);
+        }
     }
 
     // ── Resize finalize ──────────────────────────────────────────────────────
@@ -645,8 +686,25 @@ export default class BorshevikWorkspaceManager extends Extension {
             }
         }
 
-        if (info.state === 'floating')
-            info.floatRect = this._toRect(win.get_frame_rect());
+        if (info.state === 'floating') {
+            if (info.floatRect) {
+                // Already has a float rect from this session — just refresh position.
+                info.floatRect = this._toRect(win.get_frame_rect());
+            } else {
+                // No float history in memory — try persisted size first.
+                const saved = this._loadFloatSize(win.get_wm_class());
+                const fr    = win.get_frame_rect();
+                if (saved) {
+                    info.floatRect = { x: fr.x, y: fr.y,
+                        width:  Math.round(wa.width  * saved.wr),
+                        height: Math.round(wa.height * saved.hr) };
+                } else {
+                    // First time ever tiling this class — seed GSettings with the initial size.
+                    info.floatRect = this._toRect(fr);
+                    this._saveFloatSize(win.get_wm_class(), fr.width / wa.width, fr.height / wa.height);
+                }
+            }
+        }
 
         // Set state BEFORE _doTile so the applyGeometry guard inside sees 'tiled-*'.
         info.state   = `tiled-${side}`;
