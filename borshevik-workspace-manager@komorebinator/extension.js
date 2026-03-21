@@ -42,6 +42,10 @@ export default class BorshevikWorkspaceManager extends Extension {
         this._moveQueue    = [];
         this._moveInFlight = false;
 
+        // Windows already scheduled for blocker-eviction — dedup so two tiles arriving
+        // simultaneously don't each try to evict the same blocker.
+        this._pendingEvictions = new Set();
+
         // Windows that have already been through _handleNewWindow or _restoreInitialState.
         this._handled = new Set();
     }
@@ -710,6 +714,14 @@ export default class BorshevikWorkspaceManager extends Extension {
             }
         }
 
+        // If no explicit width given, fill the space left by the partner rather than
+        // defaulting to half-screen. This preserves custom tile splits on re-tile.
+        if (overrideW === null) {
+            const other   = side === 'left' ? 'right' : 'left';
+            const partner = layout[other];
+            if (partner) overrideW = wa.width - partner.get_frame_rect().width;
+        }
+
         // Set state BEFORE _doTile so the applyGeometry guard inside sees 'tiled-*'.
         info.state   = `tiled-${side}`;
         layout[side] = win;
@@ -844,23 +856,23 @@ export default class BorshevikWorkspaceManager extends Extension {
 
         const layout = this._getLayout(info.layoutKey);
 
+        const winIsBlocking = win.fullscreen ||
+            (win.maximized_horizontally && win.maximized_vertically) ||
+            info.state === 'maximized';
+
         // Check whether any other window on this ws:monitor already exists.
-        // We count all tracked windows EXCEPT those that opened in the same batch and
-        // haven't been processed yet — those "don't exist yet" from our perspective.
-        // This handles both pre-existing windows (not in _handled) and previous batches.
+        // For non-blocking windows: exclude same-batch unprocessed windows (they haven't
+        // settled yet). For blocking windows: same-batch windows DO count — they will
+        // end up on this workspace and the maximized window must not cover them.
         let hasExistingOther = false;
         for (const [w, wi] of this._windows) {
             if (w === win) continue;
             if (wi.layoutKey !== info.layoutKey) continue;
-            // Same batch but not yet processed → skip (it opened simultaneously with us)
-            if (this._currentBatch?.has(w) && !this._handled.has(w)) continue;
+            // For non-blocking: same batch but not yet processed → skip
+            if (!winIsBlocking && this._currentBatch?.has(w) && !this._handled.has(w)) continue;
             hasExistingOther = true;
             break;
         }
-
-        const winIsBlocking = win.fullscreen ||
-            (win.maximized_horizontally && win.maximized_vertically) ||
-            info.state === 'maximized';
 
         const slotsUsed = (layout.left ? 1 : 0) + (layout.right ? 1 : 0);
 
@@ -912,6 +924,27 @@ export default class BorshevikWorkspaceManager extends Extension {
             // Fall back to preferred if it's free, or other if preferred is taken.
             // Don't tile if both sides are already occupied.
             const side = !layout[preferred] ? preferred : !layout[other] ? other : null;
+            if (side !== null && this._moveWhenMax) {
+                // If a blocking (maximized/fullscreen) window is on this workspace it
+                // arrived alone and wasn't evicted yet. Push it left so tiles get a
+                // clean workspace. Deduplicate: two simultaneous tiles evict once.
+                for (const [blocker, bi] of this._windows) {
+                    if (blocker === win) continue;
+                    if (bi.layoutKey !== this._windows.get(win)?.layoutKey) continue;
+                    if (this._moving.has(blocker)) continue;
+                    if (this._pendingEvictions.has(blocker)) continue;
+                    if (blocker.fullscreen || bi.state === 'maximized') {
+                        LOG('restoreInitialState: evicting blocker', blocker.get_wm_class(), '← left');
+                        this._pendingEvictions.add(blocker);
+                        this._defer(() => {
+                            this._pendingEvictions.delete(blocker);
+                            if (this._windows.has(blocker))
+                                this._moveToNewWorkspace(blocker, null, 'left');
+                        });
+                        break;
+                    }
+                }
+            }
             if (side !== null) this._tileWindow(win, side, customW);
         }
         // otherwise leave floating
@@ -1293,19 +1326,19 @@ export default class BorshevikWorkspaceManager extends Extension {
     /** Move win to a new workspace to the right of current.
      *  tileOnArrive: 'left'|'right'|null — if set, tile on that side upon arrival
      *  instead of activating the new workspace. */
-    _moveToNewWorkspace(win, tileOnArrive = null) {
+    _moveToNewWorkspace(win, tileOnArrive = null, direction = 'right') {
         // Serialise: if another move is in flight, queue and process after it completes
         if (this._moveInFlight) {
             LOG('moveToNewWorkspace: queued', win.get_wm_class());
-            this._moveQueue.push({ win, tileOnArrive });
+            this._moveQueue.push({ win, tileOnArrive, direction });
             return;
         }
         this._moveInFlight = true;
-        this._doMoveToNewWorkspace(win, tileOnArrive);
+        this._doMoveToNewWorkspace(win, tileOnArrive, direction);
     }
 
-    _doMoveToNewWorkspace(win, tileOnArrive = null) {
-        LOG('moveToNewWorkspace:', win.get_wm_class(), tileOnArrive ? `tileOnArrive=${tileOnArrive}` : '');
+    _doMoveToNewWorkspace(win, tileOnArrive = null, direction = 'right') {
+        LOG('moveToNewWorkspace:', win.get_wm_class(), tileOnArrive ? `tileOnArrive=${tileOnArrive}` : '', `dir=${direction}`);
 
         // Guard: sticky windows can't be moved — Mutter silently ignores the call,
         // leaving an orphan empty workspace. Skip them entirely.
@@ -1321,7 +1354,9 @@ export default class BorshevikWorkspaceManager extends Extension {
         const monitor    = win.get_monitor();
 
         manager.append_new_workspace(false, global.get_current_time());
-        const newIdx = currentIdx + 1;
+        // 'right': insert after current (window follows user); 'left': insert before current
+        // (blocker eviction — user stays on the tile workspace, blocker goes left/behind).
+        const newIdx = direction === 'left' ? currentIdx : currentIdx + 1;
         manager.reorder_workspace(
             manager.get_workspace_by_index(manager.get_n_workspaces() - 1),
             newIdx
@@ -1337,9 +1372,9 @@ export default class BorshevikWorkspaceManager extends Extension {
         const info = this._windows.get(win);
         if (info) info.layoutKey = `${newIdx}:${monitor}`;
 
-        // When tiling on arrival, stay on current workspace (user doesn't follow displaced tile).
+        // When tiling on arrival or evicting left, stay on current workspace.
         // Otherwise activate the new workspace so the user follows their window.
-        if (!tileOnArrive) {
+        if (!tileOnArrive && direction !== 'left') {
             const fullscreen = oldWs.list_windows()
                 .some(w => w.fullscreen && w.get_monitor() === monitor && w !== win);
             if (!fullscreen)
@@ -1368,10 +1403,10 @@ export default class BorshevikWorkspaceManager extends Extension {
     _finishMove(_win) {
         this._moveInFlight = false;
         if (this._moveQueue.length > 0) {
-            const { win: next, tileOnArrive } = this._moveQueue.shift();
+            const { win: next, tileOnArrive, direction } = this._moveQueue.shift();
             if (this._windows.has(next)) {
                 this._moveInFlight = true;
-                this._doMoveToNewWorkspace(next, tileOnArrive);
+                this._doMoveToNewWorkspace(next, tileOnArrive, direction);
             } else {
                 this._finishMove(null);  // window closed while queued, skip to next
             }
