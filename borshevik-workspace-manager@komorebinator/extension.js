@@ -343,6 +343,10 @@ export default class BorshevikWorkspaceManager extends Extension {
             info.state = 'floating';
         LOG('workspace-changed:', win.get_wm_class(), '→', info.layoutKey, this._moving.has(win) ? '(by us)' : '(by user)');
         if (this._moving.has(win)) return;
+        // User manually moved the window — raise it to the top so z-order reflects the
+        // move, then skip the next coverage check so we don't immediately fly it away.
+        win.raise();
+        info.justMoved = true;
         // User manually moved the window — respect their choice, only tile if a slot is free.
         // Never force-move to a new workspace.
         if (this._moveWhenMax)
@@ -974,6 +978,8 @@ export default class BorshevikWorkspaceManager extends Extension {
             if (wi.state !== 'floating') continue;
             if (floatWin.above) continue;
             if (floatWin.is_always_on_all_workspaces()) continue;
+            // Skip windows just moved here by the user — clear the flag and leave them alone.
+            if (wi.justMoved) { wi.justMoved = false; continue; }
             if (this._moving.has(floatWin)) continue;
             const parent = floatWin.get_transient_for();
             if (parent && this._windows.get(parent)?.layoutKey === key) continue;
