@@ -6,5 +6,10 @@
       <summary>Move window when maximized</summary>
       <description>When enabled, maximized and fullscreen windows are moved to an empty workspace.</description>
     </key>
+    <key name="debug-logging" type="b">
+      <default>false</default>
+      <summary>Debug logging</summary>
+      <description>When enabled, writes diagnostic messages to the system journal.</description>
+    </key>
   </schema>
 </schemalist>

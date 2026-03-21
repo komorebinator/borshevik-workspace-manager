@@ -17,17 +17,11 @@ const MERGE_THRESHOLD = 0.30; // max fractional width mismatch allowed for tile 
 
 export default class BorshevikWorkspaceManager extends Extension {
 
-    // ── Lifecycle ────────────────────────────────────────────────────────────
+    constructor(metadata) {
+        super(metadata);
 
-    enable() {
-        this._settings = this.getSettings();
-
-        const updateLog = () => {
-            LOG = this._settings.get_boolean('debug-logging')
-                ? (...a) => console.log('[BWM]', ...a) : () => {};
-        };
-        updateLog();
-        this._moveWhenMax = this._settings.get_boolean('move-window-when-maximized');
+        // Persistent state — survives enable/disable cycles (e.g. screen lock/unlock).
+        // Never cleared in disable(); windows remain tracked across lock/unlock.
 
         // MetaWindow → { state, preMaxState, floatRect, layoutKey }
         this._windows = new Map();
@@ -48,13 +42,24 @@ export default class BorshevikWorkspaceManager extends Extension {
         this._moveQueue    = [];
         this._moveInFlight = false;
 
+        // Windows that have already been through _handleNewWindow or _restoreInitialState.
+        this._handled = new Set();
+    }
+
+    // ── Lifecycle ────────────────────────────────────────────────────────────
+
+    enable() {
+        this._settings = this.getSettings();
+
+        const updateLog = () => {
+            LOG = this._settings.get_boolean('debug-logging')
+                ? (...a) => console.log('[BWM]', ...a) : () => {};
+        };
+        updateLog();
+        this._moveWhenMax = this._settings.get_boolean('move-window-when-maximized');
+
         // Debounce timer for restacked signal (fires very frequently)
         this._restackedTimer = null;
-
-        // Windows that have already been through _handleNewWindow or _restoreInitialState.
-        // Used to count "settled" windows when deciding placement for new arrivals — avoids
-        // treating all simultaneously-mapped windows as "existing content".
-        this._handled = new Set();
 
         // Batch processing for auto-tile: collect windows that map within a short window
         // (~150 ms) and process them together. This ensures Chrome "restore windows" and
@@ -120,10 +125,6 @@ export default class BorshevikWorkspaceManager extends Extension {
         this._mutterSettings.set_boolean('edge-tiling', this._savedEdgeTiling);
         this._mutterSettings = null;
 
-        this._windows.clear(); this._windows = null;
-        this._layouts.clear(); this._layouts = null;
-        this._handled.clear(); this._handled = null;
-        this._ourWorkspaces.clear(); this._ourWorkspaces = null;
         this._settings = null;
     }
 
@@ -555,7 +556,6 @@ export default class BorshevikWorkspaceManager extends Extension {
                 LOG('drag-end: untile', win.get_wm_class(), 'restoring floatRect');
                 this._removeFromLayout(win);
                 info.state = 'floating';
-                // Restore original floating size but keep current position (where user dropped it)
                 if (info.floatRect) {
                     const cur = win.get_frame_rect();
                     this._suppress.add(win);
@@ -924,11 +924,8 @@ export default class BorshevikWorkspaceManager extends Extension {
             if (floatIdx === -1) continue;
 
             const floatRect = floatWin.get_frame_rect();
-            // Covered = type-1 window is above this floater in Z AND geometrically overlaps
-            const covered = coveringWins.some(cw => {
-                const cwIdx = sorted.indexOf(cw);
-                return cwIdx > floatIdx && this._intersects(floatRect, cw.get_frame_rect());
-            });
+            // Covered = covering windows above this floater in Z together fully cover its width
+            const covered = this._isFullyCovered(floatRect, coveringWins, floatIdx, sorted);
             LOG('  floater:', floatWin.get_wm_class(), `z=${floatIdx} covered=${covered}`);
             if (covered) coveredFloaters.push(floatWin);
         }
@@ -947,12 +944,33 @@ export default class BorshevikWorkspaceManager extends Extension {
             this._moveBatchToNewWorkspace(needNewWs);
     }
 
-    /** True if rectangles a and b overlap (even by 1px). */
-    _intersects(a, b) {
-        return a.x < b.x + b.width  &&
-               a.x + a.width  > b.x &&
-               a.y < b.y + b.height &&
-               a.y + a.height > b.y;
+    /**
+     * True if the union of coveringWins that are ABOVE floatZ in Z-order
+     * fully covers the horizontal span of floatRect (and overlap vertically).
+     * This prevents false positives when a floater only partially overlaps a tile.
+     */
+    _isFullyCovered(floatRect, coveringWins, floatZ, sorted) {
+        const floatL = floatRect.x;
+        const floatR = floatRect.x + floatRect.width;
+        // Collect x-intervals of covering windows above the floater in Z that overlap vertically
+        const intervals = [];
+        for (const cw of coveringWins) {
+            const cwIdx = sorted.indexOf(cw);
+            if (cwIdx <= floatZ) continue;
+            const cr = cw.get_frame_rect();
+            if (cr.y + cr.height <= floatRect.y || cr.y >= floatRect.y + floatRect.height) continue;
+            intervals.push([cr.x, cr.x + cr.width]);
+        }
+        if (intervals.length === 0) return false;
+        intervals.sort((a, b) => a[0] - b[0]);
+        // Check if intervals cover [floatL, floatR] without gaps
+        let covered = floatL;
+        for (const [s, e] of intervals) {
+            if (s > covered) return false;  // gap before this interval
+            covered = Math.max(covered, e);
+            if (covered >= floatR) return true;
+        }
+        return false;
     }
 
     /** Returns the free rect on this key (area not occupied by covering windows), or null. */
@@ -987,6 +1005,7 @@ export default class BorshevikWorkspaceManager extends Extension {
     _tryRelocateOnSameWs(floatWin, freeArea) {
         if (!freeArea || freeArea.width < 50) return false;
         const rect  = floatWin.get_frame_rect();
+        if (rect.width > freeArea.width) return false;  // floater doesn't fit — don't claim success
         const newX  = freeArea.x + Math.floor((freeArea.width - rect.width) / 2);
         const clamp = Math.max(freeArea.x, Math.min(newX, freeArea.x + freeArea.width - rect.width));
         LOG('relocate same ws:', floatWin.get_wm_class(), `x: ${rect.x} → ${clamp}`);
@@ -1021,6 +1040,7 @@ export default class BorshevikWorkspaceManager extends Extension {
         if (!prevFree || prevFree.width < 50) return false;
 
         const rect  = floatWin.get_frame_rect();
+        if (rect.width > prevFree.width) return false;  // floater doesn't fit — try new ws instead
         const info  = this._windows.get(floatWin);
         if (!info) return false;
 
