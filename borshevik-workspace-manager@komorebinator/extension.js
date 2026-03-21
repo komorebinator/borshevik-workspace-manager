@@ -439,9 +439,7 @@ export default class BorshevikWorkspaceManager extends Extension {
             const layout = this._getLayout(info.layoutKey);
 
             if (!layout[side] || layout[side] === win) {
-                info.state    = prev;
-                layout[side]  = win;
-                this._defer(() => this._doTile(win, side));
+                this._defer(() => { if (this._windows.has(win)) this._tileWindow(win, side); });
             } else {
                 // Side taken — restore to float
                 info.state = 'floating';
@@ -626,6 +624,7 @@ export default class BorshevikWorkspaceManager extends Extension {
                     info2.floatRect.width  / wa2.width,
                     info2.floatRect.height / wa2.height);
             }
+            this._evictBlockerIfPresent(info.layoutKey);
             this._tileWindow(win, this._snapSide);
         }
     }
@@ -686,11 +685,16 @@ export default class BorshevikWorkspaceManager extends Extension {
                 layout[side] = null;
             } else {
                 // Other side is free — swap occupant there.
+                // Capture width before any resize so the split line is preserved.
+                const occupantW = occupant.get_frame_rect().width;
                 // Set state BEFORE _doTile so the applyGeometry guard sees 'tiled-*'.
                 const oi = this._windows.get(occupant);
                 if (oi) oi.state = `tiled-${other}`;
                 layout[other] = occupant;
-                this._doTile(occupant, other, wa);
+                this._doTile(occupant, other, wa, occupantW);
+                // Dragged window fills the remaining space — set overrideW now so the
+                // partner-aware calc below doesn't re-read a potentially stale frame rect.
+                overrideW = wa.width - occupantW;
             }
         }
 
@@ -719,7 +723,13 @@ export default class BorshevikWorkspaceManager extends Extension {
         if (overrideW === null) {
             const other   = side === 'left' ? 'right' : 'left';
             const partner = layout[other];
-            if (partner) overrideW = wa.width - partner.get_frame_rect().width;
+            if (partner) {
+                const pi = this._windows.get(partner);
+                // Use pending geometry width if the partner's first frame hasn't fired yet
+                // (get_frame_rect would return the pre-tile size and corrupt the split).
+                const pw = pi?.pendingGeometry?.w ?? partner.get_frame_rect().width;
+                overrideW = wa.width - pw;
+            }
         }
 
         // Set state BEFORE _doTile so the applyGeometry guard inside sees 'tiled-*'.
@@ -892,6 +902,27 @@ export default class BorshevikWorkspaceManager extends Extension {
         this._restoreInitialState(win);
     }
 
+    /** If there is a maximized/fullscreen blocker on layoutKey, schedule its eviction to the left.
+     *  Deduplicates: safe to call from multiple simultaneous tiles for the same workspace. */
+    _evictBlockerIfPresent(layoutKey) {
+        if (!this._moveWhenMax) return;
+        for (const [blocker, bi] of this._windows) {
+            if (bi.layoutKey !== layoutKey) continue;
+            if (this._moving.has(blocker)) continue;
+            if (this._pendingEvictions.has(blocker)) continue;
+            if (blocker.fullscreen || bi.state === 'maximized') {
+                LOG('evictBlocker:', blocker.get_wm_class(), '← left from', layoutKey);
+                this._pendingEvictions.add(blocker);
+                this._defer(() => {
+                    this._pendingEvictions.delete(blocker);
+                    if (this._windows.has(blocker))
+                        this._moveToNewWorkspace(blocker, null, 'left');
+                });
+                break;
+            }
+        }
+    }
+
     /** Returns true if there are any other tracked windows on this ws:monitor (excluding win itself). */
     _hasOtherWindows(layoutKey, excludeWin) {
         for (const [w, wi] of this._windows) {
@@ -924,28 +955,13 @@ export default class BorshevikWorkspaceManager extends Extension {
             // Fall back to preferred if it's free, or other if preferred is taken.
             // Don't tile if both sides are already occupied.
             const side = !layout[preferred] ? preferred : !layout[other] ? other : null;
-            if (side !== null && this._moveWhenMax) {
-                // If a blocking (maximized/fullscreen) window is on this workspace it
-                // arrived alone and wasn't evicted yet. Push it left so tiles get a
-                // clean workspace. Deduplicate: two simultaneous tiles evict once.
-                for (const [blocker, bi] of this._windows) {
-                    if (blocker === win) continue;
-                    if (bi.layoutKey !== this._windows.get(win)?.layoutKey) continue;
-                    if (this._moving.has(blocker)) continue;
-                    if (this._pendingEvictions.has(blocker)) continue;
-                    if (blocker.fullscreen || bi.state === 'maximized') {
-                        LOG('restoreInitialState: evicting blocker', blocker.get_wm_class(), '← left');
-                        this._pendingEvictions.add(blocker);
-                        this._defer(() => {
-                            this._pendingEvictions.delete(blocker);
-                            if (this._windows.has(blocker))
-                                this._moveToNewWorkspace(blocker, null, 'left');
-                        });
-                        break;
-                    }
-                }
+            if (side !== null) {
+                this._evictBlockerIfPresent(this._windows.get(win)?.layoutKey);
+                // If a partner already occupies the other side, pass null so _tileWindow
+                // computes the remaining width. Otherwise use the window's natural width.
+                const otherSide = side === 'left' ? 'right' : 'left';
+                this._tileWindow(win, side, layout[otherSide] ? null : customW);
             }
-            if (side !== null) this._tileWindow(win, side, customW);
         }
         // otherwise leave floating
     }
@@ -1261,6 +1277,8 @@ export default class BorshevikWorkspaceManager extends Extension {
         if (layout[closedSide]) return;
         const candidate = nextLayout[closedSide];
         if (!candidate)  return;
+        // Don't pull candidate away from its companion on the source workspace
+        if (nextLayout[other]) return;
 
         if (!this._canMergeInto(candidate, closedSide, wsIdx, mon)) return;
 
