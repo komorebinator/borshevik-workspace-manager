@@ -1405,8 +1405,8 @@ export default class BorshevikWorkspaceManager extends Extension {
                 const info = this._windows.get(win);
                 if (tileOnArrive) {
                     this._tileWindow(win, tileOnArrive);
-                } else if (win.maximized_horizontally && win.maximized_vertically) {
-                    // Window arrived already maximized (e.g. tiled→maximize path).
+                } else if (win.fullscreen || (win.maximized_horizontally && win.maximized_vertically)) {
+                    // Window arrived already maximized/fullscreen (e.g. tiled→maximize path).
                     // Just register the state — do NOT call _restoreInitialState which
                     // would run _doMaximize and clobber the saved preMaxState.
                     if (info.state !== 'maximized') info.state = 'maximized';
