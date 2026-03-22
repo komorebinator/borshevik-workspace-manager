@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import Clutter from 'gi://Clutter';
 import GLib  from 'gi://GLib';
 import Meta  from 'gi://Meta';
 import Shell from 'gi://Shell';
@@ -116,7 +117,18 @@ export default class BorshevikWorkspaceManager extends Extension {
                 this._moveWhenMax = this._settings.get_boolean('move-window-when-maximized');
             })],
             [this._settings,           this._settings.connect('changed::debug-logging', updateLog)],
+            // Indicator signals
+            [global.workspace_manager, global.workspace_manager.connect('active-workspace-changed', () => this._scheduleIndicatorUpdate())],
+            [global.workspace_manager, global.workspace_manager.connect('workspace-added',          () => this._scheduleIndicatorUpdate())],
+            [Shell.WindowTracker.get_default(), Shell.WindowTracker.get_default().connect('tracked-windows-changed', () => this._scheduleIndicatorUpdate())],
         ];
+
+        // Panel indicator — replaces the default activities/workspace dots
+        this._indicatorTimer = null;
+        Main.panel.statusArea['activities']?.hide();
+        this._indicator = new St.BoxLayout({ style_class: 'bwm-indicator' });
+        Main.panel._leftBox.insert_child_at_index(this._indicator, 0);
+        this._scheduleIndicatorUpdate();
     }
 
     disable() {
@@ -139,6 +151,14 @@ export default class BorshevikWorkspaceManager extends Extension {
             this._restackedTimer = null;
         }
 
+        if (this._indicatorTimer) {
+            GLib.source_remove(this._indicatorTimer);
+            this._indicatorTimer = null;
+        }
+        this._indicator.destroy();
+        this._indicator = null;
+        Main.panel.statusArea['activities']?.show();
+
         this._preview.destroy();
         this._preview = null;
 
@@ -152,6 +172,98 @@ export default class BorshevikWorkspaceManager extends Extension {
         this._mutterKbSettings = null;
 
         this._settings = null;
+    }
+
+    // ── Panel indicator ──────────────────────────────────────────────────────
+
+    _scheduleIndicatorUpdate() {
+        if (this._indicatorTimer) return;
+        this._indicatorTimer = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+            this._indicatorTimer = null;
+            this._updateIndicator();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _updateIndicator() {
+        this._indicator.destroy_all_children();
+        const wm      = global.workspace_manager;
+        const nWs     = wm.get_n_workspaces();
+        const activeI = wm.get_active_workspace_index();
+        const tracker = Shell.WindowTracker.get_default();
+        const ICON    = 22;
+        const HALF    = ICON / 2;
+
+        for (let i = 0; i < nWs; i++) {
+            const wins = wm.get_workspace_by_index(i)
+                .list_windows()
+                .filter(w => this._isRelevant(w));
+
+            if (wins.length === 0 && i !== activeI) continue;
+
+            const isActive = i === activeI;
+            const btn = new St.Button({
+                style_class: isActive ? 'bwm-ws bwm-ws-active' : 'bwm-ws',
+                reactive: true,
+            });
+            btn.connect('clicked', () =>
+                wm.get_workspace_by_index(i).activate(global.get_current_time()));
+
+            const row = new St.BoxLayout({ style_class: 'bwm-ws-row' });
+            row.add_child(new St.Label({ text: `${i + 1}`, style_class: 'bwm-ws-num', y_align: Clutter.ActorAlign.CENTER }));
+
+            // Find tiled pair for this workspace
+            const layout = this._layouts.get(`${i}:0`);
+            const leftWin  = layout?.left  ?? null;
+            const rightWin = layout?.right ?? null;
+            const tileAdded = new Set();
+
+            for (const win of wins) {
+                if (tileAdded.has(win)) continue;
+                const app = tracker.get_window_app(win);
+                if (!app) continue;
+
+                // Tiled pair: render as merged half-icons.
+                // Trigger on whichever of the two arrives first in the array.
+                const isPairMember = (win === leftWin && rightWin) || (win === rightWin && leftWin);
+                if (isPairMember) {
+                    const lWin = leftWin;
+                    const rWin = rightWin;
+                    const lApp = tracker.get_window_app(lWin);
+                    const rApp = tracker.get_window_app(rWin);
+                    if (lApp && rApp) {
+                        tileAdded.add(lWin);
+                        tileAdded.add(rWin);
+
+                        const merged = new St.BoxLayout({ style_class: 'bwm-tile-pair' });
+
+                        const lClip = new St.Widget({ width: HALF, height: ICON, clip_to_allocation: true });
+                        lClip.add_child(lApp.create_icon_texture(ICON));
+                        merged.add_child(lClip);
+
+                        const rClip = new St.Widget({ width: HALF, height: ICON, clip_to_allocation: true });
+                        const rIcon = rApp.create_icon_texture(ICON);
+                        rIcon.set_position(-HALF, 0);
+                        rClip.add_child(rIcon);
+                        merged.add_child(rClip);
+
+                        row.add_child(merged);
+                        continue;
+                    }
+                }
+
+                // Skip right tile — already rendered above as part of the pair
+                if (tileAdded.has(win)) continue;
+
+                // Floating / unpaired window — full icon
+                const icon = app.create_icon_texture(ICON);
+                icon.style_class = 'bwm-app-icon';
+                row.add_child(icon);
+            }
+
+            btn.set_child(row);
+            this._indicator.add_child(btn);
+        }
     }
 
     // ── Small helpers ────────────────────────────────────────────────────────
