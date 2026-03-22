@@ -229,6 +229,7 @@ export default class BorshevikWorkspaceManager extends Extension {
 
     _onMap(act) {
         const win = act.meta_window;
+        LOG('map-raw:', win.get_wm_class(), `type=${win.window_type} skip=${win.skip_taskbar} sticky=${win.is_always_on_all_workspaces()}`);
         if (!this._isRelevant(win)) return;
 
         const r0 = win.get_frame_rect();
@@ -478,6 +479,21 @@ export default class BorshevikWorkspaceManager extends Extension {
 
     _onGrabBegin(win, op) {
         LOG('grab-op-begin:', win?.get_wm_class() ?? 'null', `op=${op}`, `tracked=${!!win && this._windows.has(win)}`);
+        // Chrome tab detach creates a window that never fires `map` on Wayland.
+        // Register it here so drag-to-snap works normally.
+        if (win && !this._windows.has(win) && this._isRelevant(win)) {
+            LOG('grab-op-begin: late-registering', win.get_wm_class());
+            const info = {
+                state: 'floating', preMaxState: null, floatRect: null,
+                layoutKey: this._winKey(win), firstFrameFired: true, pendingGeometry: null,
+            };
+            this._windows.set(win, info);
+            win.connect('unmanaged',         () => this._onUnmanaged(win));
+            win.connect('workspace-changed', () => this._onWorkspaceChanged(win));
+            win.connect('notify::maximized-horizontally', () => this._onMaximizeChange(win));
+            win.connect('notify::maximized-vertically',   () => this._onMaximizeChange(win));
+            win.connect('notify::fullscreen',             () => this._onMaximizeChange(win));
+        }
         if (!win || !this._windows.has(win)) return;
 
         if (op === Meta.GrabOp.MOVING) {
@@ -734,9 +750,12 @@ export default class BorshevikWorkspaceManager extends Extension {
                         width:  Math.round(wa.width  * saved.wr),
                         height: Math.round(wa.height * saved.hr) };
                 } else {
-                    // First time ever tiling this class — seed GSettings with the initial size.
+                    // First time ever tiling this class — seed GSettings with the initial size,
+                    // but only if the window is not maximized/fullscreen (its rect would be the
+                    // full screen and we'd persist a bogus size).
                     info.floatRect = this._toRect(fr);
-                    this._saveFloatSize(win.get_wm_class(), fr.width / wa.width, fr.height / wa.height);
+                    if (!win.fullscreen && !win.maximized_horizontally && !win.maximized_vertically)
+                        this._saveFloatSize(win.get_wm_class(), fr.width / wa.width, fr.height / wa.height);
                 }
             }
         }
