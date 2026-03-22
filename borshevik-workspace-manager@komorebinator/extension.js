@@ -3,10 +3,11 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import GLib from 'gi://GLib';
-import Meta from 'gi://Meta';
-import St   from 'gi://St';
-import Gio  from 'gi://Gio';
+import GLib  from 'gi://GLib';
+import Meta  from 'gi://Meta';
+import Shell from 'gi://Shell';
+import St    from 'gi://St';
+import Gio   from 'gi://Gio';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
@@ -90,6 +91,21 @@ export default class BorshevikWorkspaceManager extends Extension {
         this._savedEdgeTiling = this._mutterSettings.get_boolean('edge-tiling');
         this._mutterSettings.set_boolean('edge-tiling', false);
 
+        // Override Super+Left / Super+Right with our own tile logic.
+        // First disable the mutter built-ins so they don't fire alongside ours.
+        this._mutterKbSettings = new Gio.Settings({ schema_id: 'org.gnome.mutter.keybindings' });
+        this._savedTileLeft    = this._mutterKbSettings.get_strv('toggle-tiled-left');
+        this._savedTileRight   = this._mutterKbSettings.get_strv('toggle-tiled-right');
+        this._mutterKbSettings.set_strv('toggle-tiled-left',  []);
+        this._mutterKbSettings.set_strv('toggle-tiled-right', []);
+
+        Main.wm.addKeybinding('tile-left',  this._settings,
+            Meta.KeyBindingFlags.NONE, Shell.ActionMode.NORMAL,
+            () => this._tileKeyboard('left'));
+        Main.wm.addKeybinding('tile-right', this._settings,
+            Meta.KeyBindingFlags.NONE, Shell.ActionMode.NORMAL,
+            () => this._tileKeyboard('right'));
+
         this._handles = [
             [global.window_manager,    global.window_manager.connect('map', (_, act) => this._onMap(act))],
             [global.display,           global.display.connect('grab-op-begin', (_, w, op) => this._onGrabBegin(w, op))],
@@ -128,6 +144,12 @@ export default class BorshevikWorkspaceManager extends Extension {
 
         this._mutterSettings.set_boolean('edge-tiling', this._savedEdgeTiling);
         this._mutterSettings = null;
+
+        Main.wm.removeKeybinding('tile-left');
+        Main.wm.removeKeybinding('tile-right');
+        this._mutterKbSettings.set_strv('toggle-tiled-left',  this._savedTileLeft);
+        this._mutterKbSettings.set_strv('toggle-tiled-right', this._savedTileRight);
+        this._mutterKbSettings = null;
 
         this._settings = null;
     }
@@ -363,6 +385,7 @@ export default class BorshevikWorkspaceManager extends Extension {
         if (!info) return;
 
         const full = win.fullscreen || (win.maximized_horizontally && win.maximized_vertically);
+        LOG('onMaximizeChange:', win.get_wm_class(), `full=${full} fs=${win.fullscreen} maxH=${win.maximized_horizontally} maxV=${win.maximized_vertically} state=${info.state}`);
 
         // notify::maximized-h and notify::maximized-v both fire for one maximize op.
         // Skip if the state already matches — the second signal is always a no-op.
@@ -782,8 +805,25 @@ export default class BorshevikWorkspaceManager extends Extension {
                 win.unmake_fullscreen();
             if (win.maximized_horizontally || win.maximized_vertically)
                 win.unmaximize();
-            applyGeometry();   // apply synchronously — no defer needed with _prepareAnimationInfo
+            applyGeometry();
             this._suppress.delete(win);
+            // Some apps (e.g. Chrome) process unmaximize asynchronously and restore
+            // their pre-maximize position after we applied geometry. Re-apply once
+            // the app signals it has settled via size-changed.
+            let sigId = win.connect('size-changed', () => {
+                win.disconnect(sigId);
+                sigId = null;
+                if (this._windows.has(win) && this._windows.get(win)?.state.startsWith('tiled'))
+                    applyGeometry();
+            });
+            // Safety: disconnect if size-changed never fires.
+            GLib.timeout_add(GLib.PRIORITY_DEFAULT, 2000, () => {
+                if (sigId !== null) {
+                    win.disconnect(sigId);
+                    sigId = null;
+                }
+                return GLib.SOURCE_REMOVE;
+            });
         } else if (info && !info.firstFrameFired) {
             // Window hasn't drawn its first frame yet — move_resize_frame sent now
             // will be queued behind the initial configure roundtrip and may be ignored.
@@ -904,9 +944,25 @@ export default class BorshevikWorkspaceManager extends Extension {
 
     /** If there is a maximized/fullscreen blocker on layoutKey, schedule its eviction to the left.
      *  Deduplicates: safe to call from multiple simultaneous tiles for the same workspace. */
-    _evictBlockerIfPresent(layoutKey) {
+    _tileKeyboard(side) {
+        const win = global.display.get_focus_window();
+        if (!win || !this._windows.has(win)) return;
+        const info = this._windows.get(win);
+        if (info.state === `tiled-${side}`) {
+            // Already on this side — untile back to float
+            this._removeFromLayout(win);
+            info.state = 'floating';
+            this._doFloat(win);
+        } else {
+            this._evictBlockerIfPresent(info.layoutKey, win);
+            this._tileWindow(win, side);
+        }
+    }
+
+    _evictBlockerIfPresent(layoutKey, excludeWin = null) {
         if (!this._moveWhenMax) return;
         for (const [blocker, bi] of this._windows) {
+            if (blocker === excludeWin) continue;
             if (bi.layoutKey !== layoutKey) continue;
             if (this._moving.has(blocker)) continue;
             if (this._pendingEvictions.has(blocker)) continue;
