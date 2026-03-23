@@ -192,73 +192,58 @@ export default class BorshevikWorkspaceManager extends Extension {
         const activeI = wm.get_active_workspace_index();
         const tracker = Shell.WindowTracker.get_default();
         const ICON    = 22;
-        const HALF    = ICON / 2;
+
+        // Logo button
+        const logoPath = this.path + '/borshevik_logo_white.svg';
+        const logoBtn = new St.Button({
+            style_class: 'bwm-logo-btn', reactive: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        logoBtn.set_y_expand(false);
+        const logoIcon = new St.Icon({ gicon: Gio.icon_new_for_string(logoPath), icon_size: 22 });
+        logoIcon.opacity = 179; // 70%
+        logoBtn.set_child(logoIcon);
+        logoBtn.connect('clicked', () => Main.overview.toggle());
+        this._indicator.add_child(logoBtn);
 
         for (let i = 0; i < nWs; i++) {
             const wins = wm.get_workspace_by_index(i)
                 .list_windows()
                 .filter(w => this._isRelevant(w));
 
-            if (wins.length === 0 && i !== activeI) continue;
+            const isLast = i === nWs - 1 && wins.length === 0;
+
+            // Skip empty workspace if inactive and not the last one, or if it's the only workspace
+            if (wins.length === 0 && !isLast && (i !== activeI || nWs === 1)) continue;
+            // Skip entirely if only 1 workspace and it's empty
+            if (wins.length === 0 && nWs === 1) continue;
 
             const isActive = i === activeI;
             const btn = new St.Button({
                 style_class: isActive ? 'bwm-ws bwm-ws-active' : 'bwm-ws',
                 reactive: true,
+                y_align: Clutter.ActorAlign.CENTER,
             });
+            btn.set_y_expand(false);
             btn.connect('clicked', () =>
                 wm.get_workspace_by_index(i).activate(global.get_current_time()));
 
             const row = new St.BoxLayout({ style_class: 'bwm-ws-row' });
             row.add_child(new St.Label({ text: `${i + 1}`, style_class: 'bwm-ws-num', y_align: Clutter.ActorAlign.CENTER }));
 
-            // Find tiled pair for this workspace
-            const layout = this._layouts.get(`${i}:0`);
-            const leftWin  = layout?.left  ?? null;
-            const rightWin = layout?.right ?? null;
-            const tileAdded = new Set();
-
-            for (const win of wins) {
-                if (tileAdded.has(win)) continue;
-                const app = tracker.get_window_app(win);
-                if (!app) continue;
-
-                // Tiled pair: render as merged half-icons.
-                // Trigger on whichever of the two arrives first in the array.
-                const isPairMember = (win === leftWin && rightWin) || (win === rightWin && leftWin);
-                if (isPairMember) {
-                    const lWin = leftWin;
-                    const rWin = rightWin;
-                    const lApp = tracker.get_window_app(lWin);
-                    const rApp = tracker.get_window_app(rWin);
-                    if (lApp && rApp) {
-                        tileAdded.add(lWin);
-                        tileAdded.add(rWin);
-
-                        const merged = new St.BoxLayout({ style_class: 'bwm-tile-pair' });
-
-                        const lClip = new St.Widget({ width: HALF, height: ICON, clip_to_allocation: true });
-                        lClip.add_child(lApp.create_icon_texture(ICON));
-                        merged.add_child(lClip);
-
-                        const rClip = new St.Widget({ width: HALF, height: ICON, clip_to_allocation: true });
-                        const rIcon = rApp.create_icon_texture(ICON);
-                        rIcon.set_position(-HALF, 0);
-                        rClip.add_child(rIcon);
-                        merged.add_child(rClip);
-
-                        row.add_child(merged);
-                        continue;
-                    }
+            if (isLast) {
+                // Last workspace is always empty — show symbolic add icon to invite switching there
+                row.add_child(new St.Icon({ icon_name: 'list-add-symbolic', icon_size: 14, style_class: 'bwm-ws-plus', y_align: Clutter.ActorAlign.CENTER }));
+            } else {
+                for (const win of wins) {
+                    const app = tracker.get_window_app(win);
+                    if (!app) continue;
+                    const icon = app.create_icon_texture(ICON);
+                    icon.style_class = 'bwm-app-icon';
+                    if (!isActive)
+                        icon.add_effect(new Clutter.DesaturateEffect({ factor: 1.0 }));
+                    row.add_child(icon);
                 }
-
-                // Skip right tile — already rendered above as part of the pair
-                if (tileAdded.has(win)) continue;
-
-                // Floating / unpaired window — full icon
-                const icon = app.create_icon_texture(ICON);
-                icon.style_class = 'bwm-app-icon';
-                row.add_child(icon);
             }
 
             btn.set_child(row);

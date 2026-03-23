@@ -11,5 +11,18 @@
       <summary>Debug logging</summary>
       <description>When enabled, writes diagnostic messages to the system journal.</description>
     </key>
+    <key name="float-sizes" type="s">
+      <default>'{}'</default>
+      <summary>Saved float sizes per window class</summary>
+      <description>JSON map of wm_class → {wr, hr} fractions of work area, saved when a floating window is tiled by the user.</description>
+    </key>
+    <key name="tile-left" type="as">
+      <default>['&lt;Super&gt;Left']</default>
+      <summary>Tile focused window to the left</summary>
+    </key>
+    <key name="tile-right" type="as">
+      <default>['&lt;Super&gt;Right']</default>
+      <summary>Tile focused window to the right</summary>
+    </key>
   </schema>
 </schemalist>
