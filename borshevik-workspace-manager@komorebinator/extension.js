@@ -194,22 +194,24 @@ export default class BorshevikWorkspaceManager extends Extension {
         const ICON    = 22;
 
         // Logo button
-        const logoPath = this.path + '/borshevik_logo_white.svg';
+        const logoPath = this.path + '/bwm_icon.svg';
         const logoBtn = new St.Button({
             style_class: 'bwm-logo-btn', reactive: true,
             y_align: Clutter.ActorAlign.CENTER,
         });
         logoBtn.set_y_expand(false);
         const logoIcon = new St.Icon({ gicon: Gio.icon_new_for_string(logoPath), icon_size: 22 });
-        logoIcon.opacity = 179; // 70%
+        logoIcon.opacity = 204; // 80%
         logoBtn.set_child(logoIcon);
+        logoBtn.connect('enter-event', () => { logoIcon.opacity = 255; });
+        logoBtn.connect('leave-event', () => { logoIcon.opacity = 204; });
         logoBtn.connect('clicked', () => Main.overview.toggle());
         this._indicator.add_child(logoBtn);
 
         for (let i = 0; i < nWs; i++) {
-            const wins = wm.get_workspace_by_index(i)
-                .list_windows()
-                .filter(w => this._isRelevant(w));
+            const ws = wm.get_workspace_by_index(i);
+            const wins = ws.list_windows()
+                .filter(w => this._isRelevant(w) && !w.on_all_workspaces && !w.skip_pager && w.get_workspace() === ws);
 
             const isLast = i === nWs - 1 && wins.length === 0;
 
@@ -223,10 +225,11 @@ export default class BorshevikWorkspaceManager extends Extension {
                 style_class: isActive ? 'bwm-ws bwm-ws-active' : 'bwm-ws',
                 reactive: true,
                 y_align: Clutter.ActorAlign.CENTER,
+                opacity: isActive ? 255 : 204, // inactive = 80%
             });
             btn.set_y_expand(false);
             btn.connect('clicked', () =>
-                wm.get_workspace_by_index(i).activate(global.get_current_time()));
+                ws.activate(global.get_current_time()));
 
             const row = new St.BoxLayout({ style_class: 'bwm-ws-row' });
             row.add_child(new St.Label({ text: `${i + 1}`, style_class: 'bwm-ws-num', y_align: Clutter.ActorAlign.CENTER }));
@@ -345,6 +348,22 @@ export default class BorshevikWorkspaceManager extends Extension {
             pendingGeometry: null,   // { x, y, w, h } set by _doTile if first-frame not yet fired
         };
         this._windows.set(win, info);
+
+        // Snapshot floatRect immediately at map-time, before apps (e.g. Nautilus) can
+        // asynchronously restore their session geometry to a stale tiled size.
+        // r0 is the reliable initial size; by the time _tileWindow runs it may be wrong.
+        if (!win.fullscreen && !win.maximized_horizontally && !win.maximized_vertically) {
+            const wa0   = win.get_work_area_current_monitor();
+            const saved = this._loadFloatSize(win.get_wm_class());
+            if (saved) {
+                info.floatRect = { x: r0.x, y: r0.y,
+                    width:  Math.round(wa0.width  * saved.wr),
+                    height: Math.round(wa0.height * saved.hr) };
+            } else {
+                info.floatRect = this._toRect(r0);
+                this._saveFloatSize(win.get_wm_class(), r0.width / wa0.width, r0.height / wa0.height);
+            }
+        }
 
         // Hook first-frame NOW (t=0) so we catch it even for fast-starting apps.
         // By the time our batch timer fires (t=150ms), first-frame may have already
@@ -835,26 +854,10 @@ export default class BorshevikWorkspaceManager extends Extension {
         }
 
         if (info.state === 'floating') {
-            if (info.floatRect) {
-                // Already has a float rect from this session — just refresh position.
-                info.floatRect = this._toRect(win.get_frame_rect());
-            } else {
-                // No float history in memory — try persisted size first.
-                const saved = this._loadFloatSize(win.get_wm_class());
-                const fr    = win.get_frame_rect();
-                if (saved) {
-                    info.floatRect = { x: fr.x, y: fr.y,
-                        width:  Math.round(wa.width  * saved.wr),
-                        height: Math.round(wa.height * saved.hr) };
-                } else {
-                    // First time ever tiling this class — seed GSettings with the initial size,
-                    // but only if the window is not maximized/fullscreen (its rect would be the
-                    // full screen and we'd persist a bogus size).
-                    info.floatRect = this._toRect(fr);
-                    if (!win.fullscreen && !win.maximized_horizontally && !win.maximized_vertically)
-                        this._saveFloatSize(win.get_wm_class(), fr.width / wa.width, fr.height / wa.height);
-                }
-            }
+            const fr = win.get_frame_rect();
+            info.floatRect = this._toRect(fr);
+            if (!win.fullscreen && !win.maximized_horizontally && !win.maximized_vertically)
+                this._saveFloatSize(win.get_wm_class(), fr.width / wa.width, fr.height / wa.height);
         }
 
         // If no explicit width given, fill the space left by the partner rather than
