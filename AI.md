@@ -15,6 +15,196 @@ behaviour with an opinionated tiling + workspace management system.
 
 ---
 
+## Planned Architecture Rewrite
+
+> **Status:** agreed in principle, not yet implemented (2026-03-26).
+> Current code has fundamental state management problems. Full rewrite of the core
+> is needed. UI parts (drag, resize, indicator, Chrome fixes) stay largely unchanged.
+
+### Why the current architecture is broken
+
+The current code maintains `info.state` ('floating'|'tiled-left'|'tiled-right'|'maximized')
+in a `Map<MetaWindow, WindowInfo>` separately from `_layouts: Map<"wsIdx:monIdx", {left,right}>`.
+These two structures must always agree — but they don't, because:
+
+1. **`workspace-changed` is ambiguous.** It fires for real window moves AND for workspace index
+   shifts (when any workspace is added/removed, GNOME shifts all indices and fires the signal
+   for every window even though nothing moved). Current code resets state to 'floating' for
+   maximized windows on this signal — BUG-13.
+
+2. **`info.state` is tracked manually in 15+ places.** Any missed event or wrong ordering
+   corrupts it permanently. There is no way to recover.
+
+3. **`_layouts` key is a string `"wsIdx:monIdx"`.** When workspace indices shift, all keys
+   become stale. Windows appear to have "moved" in our model even though they didn't.
+
+4. **State and layout are two separate structures that must agree.** There is no enforcement.
+   They drift. Every bug we fix in one place breaks the other.
+
+5. **Four suppression sets** (`_suppress`, `_moving`, `_handled`, `_pendingEvictions`) exist
+   to paper over the above problems. They interact in complex ways and cause their own bugs.
+
+### Target architecture
+
+**Principle 1: State lives on the window object itself.**
+
+Instead of a `Map<MetaWindow, WindowInfo>`, store state directly on the MetaWindow GObject:
+
+```js
+win._bwmState        // 'floating' | 'tiled-left' | 'tiled-right' | 'maximized'
+win._bwmFloatRect    // { x, y, width, height } | null  — saved pre-tile geometry
+win._bwmPreMax       // string | null  — state before maximize, for unmaximize restore
+win._bwmPendingGeom  // { x, y, w, h } | null  — queued geometry before first-frame fires
+win._bwmFirstFrame   // bool — has first buffer commit fired yet
+```
+
+State travels with the window wherever it goes. `workspace-changed` cannot corrupt it
+because state is not keyed by workspace location.
+
+**Principle 2: No `_layouts` Map. Layout is computed on demand.**
+
+Instead of maintaining a separate `_layouts` structure that must stay in sync, compute
+the current tile layout by scanning the workspace's window list:
+
+```js
+_getLayout(workspace, monitor) {
+    const wins = workspace.list_windows()
+        .filter(w => w.get_monitor() === monitor);
+    return {
+        left:  wins.find(w => w._bwmState === 'tiled-left')  ?? null,
+        right: wins.find(w => w._bwmState === 'tiled-right') ?? null,
+    };
+}
+```
+
+This is always correct by definition — it reads actual live state from actual live windows.
+O(n) scan, but workspaces have ≤10 windows, cost is negligible.
+
+**Principle 3: Scoped operation state lives in closures, not global fields.**
+
+`_drag` and `_resize` are naturally scoped to a single grab operation on a single window.
+Use JS closures instead of `this._drag`/`this._resize` instance fields:
+
+```js
+_onGrabBegin(win, op) {
+    if (op === Meta.GrabOp.MOVING) {
+        let snapSide = null;
+        const monitor = win.get_monitor();
+        const pollId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 33, () => {
+            snapSide = this._pollDrag(win, monitor, snapSide);
+            return GLib.SOURCE_CONTINUE;
+        });
+        win._bwmEndDrag = () => {
+            GLib.source_remove(pollId);
+            this._finalizeDrag(win, snapSide, monitor);
+            delete win._bwmEndDrag;
+        };
+    }
+    if (/* resize op */) {
+        const partner = /* _getLayout(...).other */;
+        win._bwmEndResize = () => {
+            this._finalizeResize(win, partner);
+            delete win._bwmEndResize;
+        };
+    }
+}
+
+_onGrabEnd(win) {
+    win._bwmEndDrag?.();
+    win._bwmEndResize?.();
+}
+```
+
+**Principle 4: Global state reduced to absolute minimum.**
+
+```js
+_ourWorkspaces  Set<MetaWorkspace>  // workspaces we created (for auto-leave)
+                                    // MetaWorkspace OBJECTS not indices —
+                                    // stable across workspace add/remove
+_pendingBatch   Set<MetaWindow>     // windows opening within 150ms batch window
+_batchTimer     number|null         // GLib source id for batch flush
+```
+
+**Everything else is gone:** `_windows` Map, `_layouts` Map, `_suppress`, `_moving`,
+`_handled`, `_pendingEvictions`, `layoutKey` string, `this._drag`, `this._resize`.
+
+**Principle 4: `workspace-changed` becomes nearly a no-op.**
+
+Since state is on the window, when a window moves workspace, its `_bwmState` is unchanged.
+The only thing to handle:
+- If the window was tiled, the old workspace may now have an unpaired tile → check and
+  potentially give it full width or float it.
+- If the window is maximized, do nothing — state is correct, Mutter knows it's maximized.
+- Workspace index shifts → `win.get_workspace()` returns the SAME MetaWorkspace object
+  (stable identity), indices change but objects don't. `_ourWorkspaces` uses objects, not
+  indices, so it's unaffected.
+
+**Principle 5: Chrome double-event handled by state check, not suppression.**
+
+Instead of `_suppress` set, check if action is actually needed before acting:
+
+```js
+_onMaximizeChange(win) {
+    const isMax = win.fullscreen || (win.maximized_horizontally && win.maximized_vertically);
+    if (isMax && win._bwmState === 'maximized') return;  // already handled, ignore
+    if (!isMax && win._bwmState !== 'maximized') return; // not our event, ignore
+    // ... handle the actual transition
+}
+```
+
+### Explicit decisions / non-requirements
+
+- **disable() cleanup**: do nothing. GNOME disables extensions on lock screen / shutdown and
+  windows close anyway. No need to clean up `win._bwm*` or disconnect per-window signals.
+  Can improve later.
+- **Signal disconnect**: don't explicitly disconnect per-window signals on unmanaged/disable.
+  GObject cleans up when the window is destroyed.
+- **Partner on tile close**: partner stays at its current half-width. No auto-expand to full
+  screen — that was never a requirement.
+- **pendingBatch**: keep it. Needed for Chrome "restore session" (many windows open at once
+  and must land on the correct workspaces). Remove later if the new architecture makes it
+  unnecessary.
+- **Branch**: rewrite directly in main.
+
+### How to detect tracked windows without `_windows` Map
+
+```js
+const isTracked = win => win._bwmState !== undefined;
+```
+
+### What stays the same
+
+These parts of the current code work correctly and should be preserved:
+- Tiling mechanics: `_doTile`, `_doFloat`, keyboard tile, snap-to-edge
+- Chrome async geometry fix: one-shot `size-changed` re-apply
+- Chrome tab-detach tracking: late-register in `_onGrabBegin`
+- Split resize: `_pollResize`, `_finalizeResize`
+- Drag mechanics: `_pollDrag`, `_finalizeDrag`, snap preview
+- Covered floater logic: `_checkCoveredFloaters`, `_isFullyCovered`
+- Panel indicator: `_updateIndicator`, CSS
+- First-frame / pendingGeometry handling (moves to `win._bwmPendingGeom`)
+
+### What changes
+
+| Current | New |
+|---------|-----|
+| `Map<MetaWindow, WindowInfo>` | properties on `MetaWindow` directly |
+| `Map<"wsIdx:monIdx", layout>` | `_getLayout(workspace, monitor)` computed on demand |
+| `layoutKey: "wsIdx:monIdx"` | not needed — use `win.get_workspace()` + `win.get_monitor()` |
+| `_suppress`, `_moving`, `_handled`, `_pendingEvictions` | removed |
+| `_ourWorkspaces: Set<number>` | `Set<MetaWorkspace>` (object identity, not index) |
+| `workspace-changed` resets state | no-op for state; only handles fill-gap and batch skip |
+
+### Bugs this fixes automatically
+
+- **BUG-13** (VSCode state corrupted on ws index shift): state on window, not in index-keyed map
+- **BUG-08** (orphaned layoutKey after workspace deletion): no layoutKey, no orphaning
+- **BUG-07** (state set before layout update): no layout structure to update separately
+- **BUG-05** (duplicate signal connections): separate issue, fix independently
+- **Double-event from Chrome/Mutter**: handled by state check in `_onMaximizeChange`
+
+---
+
 ## Core Behaviour
 
 ### Window States
@@ -327,3 +517,33 @@ not consulted again once `info.floatRect` is set.
 - Fixed BUG-01: tile→untile wrong size restore — removed "position only" floatRect guard that
   was incorrectly added to protect against Nautilus async restore (apps don't do that — we own geometry)
 - Fixed BUG-02: PiP/sticky windows in indicator (`!w.skip_pager && w.get_workspace() === ws`)
+- **Full architectural rewrite (2026-03-26):** replaced `_windows` Map + `_layouts` Map with
+  state-on-window (`win._bwm*`) + on-demand `_getLayout(workspace, monitor)`. Removed `_suppress`,
+  `_moving`, `_handled`, `_pendingEvictions`. See "Planned Architecture Rewrite" section for rationale.
+
+### Architecture stability analysis (post-rewrite)
+
+**Why the new architecture is more stable:**
+- Single source of truth: `_getLayout` reads live Mutter state — structural desync is impossible.
+- `workspace-changed` no longer corrupts state: state is on the window object, workspace indices
+  are irrelevant (fixes BUG-13).
+- `_onMaximizeChange` is idempotent via state-check: Chrome double-notify is structurally handled,
+  not patched with a suppression set.
+- Bugs no longer accumulate: stale state can't persist across operations because `_getLayout`
+  always reads the current picture.
+
+**Key invariant to maintain:**
+`win._bwmState === 'tiled-left'` must mean the window is physically on the left half of its
+workspace. If state is set before the window physically moves (e.g. in `_onUnmaximized` before a
+`_defer`), `_getLayout` must still return a correct result — this works because
+`workspace.list_windows()` reflects the window's current workspace, and we set state only when
+the window is already on the right workspace (or is about to arrive synchronously via
+`change_workspace_by_index`).
+
+**Remaining risk areas:**
+- Batch operations (multiple windows opening simultaneously): `_currentBatch` + `win._bwmHandled`
+  must correctly distinguish processed vs unprocessed windows — same as before, just different
+  field names.
+- `_displaceTile` / `_collapseIfPossible` timing: occupant moves workspace synchronously via
+  `change_workspace_by_index`, geometry is applied in `_defer`. The gap between move and geometry
+  is where a second tile could mis-read the layout. Low probability but possible.
