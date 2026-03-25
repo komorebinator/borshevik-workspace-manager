@@ -158,11 +158,36 @@ not consulted again once `info.floatRect` is set.
 
 ### Bugs
 
-- [ ] **BUG-10: tile→maximize→unmaximize allows tiles on top of maximized window** *(regression from BUG-09 fix)*
-  After setting `info.state = 'tiled-${side}'` early in `_onUnmaximized`, something allows
-  tiling windows on the same workspace as a maximized window. Root cause unknown — needs logs.
-  The early state change may confuse `_hasOtherWindows`, `_moveWhenMax`, or `handleNewWindow`
-  checks during the gap between state set and defer execution.
+- [ ] **BUG-13: maximized window state corrupted on workspace index shift** *(reported 2026-03-26)*
+  When GNOME adds/removes a workspace, all window indices shift → `workspace-changed` fires for
+  ALL windows even though they didn't actually move. `_onWorkspaceChanged` resets state to
+  `floating` for any non-tiled window (line 496), so a maximized VSCode becomes `floating` in
+  our tracking while still physically maximized. Then `_tileIntoFreeSlot` sees floating→no slots→
+  stays floating, now state is permanently wrong.
+  Root cause: `workspace-changed` signal is ambiguous — can't distinguish real move from index
+  shift. Need a way to detect index-only shifts before touching state. Possible approach: compare
+  `win.get_workspace()` identity (not index) before and after, but we don't have "before".
+  DO NOT just add `maximized` to the exclusion list — that breaks blocker detection on real moves.
+
+- [ ] **BUG-11: covered-floater relocation stopped working** *(reported 2026-03-26)*
+  Floating VSCode on workspace, Chrome webapp auto-tiles left → VSCode logs as `covered=false`
+  and is NOT relocated. Logs show `code z=1 covered=false` repeatedly after Chrome tiles.
+  Possible causes: (a) single tile never triggers relocation unless it geometrically contains
+  the floater rect — VSCode may be wider/taller than the tile; (b) state corruption from
+  double workspace-changed event at 00:31 (`code → 4:0` then `→ 2:0`, both → floating) that
+  left code in floating state with stale layoutKey; (c) our `make_above()` for `always-on-top`
+  classes may affect Z-order assumptions in `_checkCoveredFloaters`.
+
+- [ ] **BUG-12: Chrome tile opens on same workspace as VSCode** *(reported 2026-03-26)*
+  Chrome webapp auto-tiles into a workspace where VSCode is floating. User sees tile "on top of"
+  VSCode. Logs: `key=2:0 left=- right=- existing=true slots=0 blocking=false` → auto-tiles.
+  This may be by-design (free slot + tall window = auto-tile) but the covered-floater relocation
+  should then move VSCode. Blocked by BUG-11.
+
+- [ ] **BUG-10: tile→maximize→unmaximize allows tiles on top of maximized window** *(regression from BUG-09 fix — may be fixed by suppress approach, needs verification)*
+  After setting `info.state = 'tiled-${side}'` early in `_onUnmaximized`, something allowed
+  tiling windows on the same workspace as a maximized window. Reworked fix: use `_suppress`
+  instead of early state assignment. Verify this is fully resolved.
 
 - [ ] **BUG-09: tile→maximize→unmaximize leaves huge floating window**
   Steps: tile a window (Super+Left), then maximize it, then unmaximize. Instead of returning to
@@ -264,6 +289,24 @@ not consulted again once `info.floatRect` is set.
   update changed ones. Low priority — only runs on idle.
 
 ### UX / Polish
+
+- [ ] **UX-04: Always-on-top and isolated-workspace class lists**
+  Reverted (too much new surface while core bugs unfixed). When re-implementing:
+  - Schema: `always-on-top` (as) with `/regex/` syntax for title rules + plain string for WM_CLASS
+  - Schema: `isolated-workspace-classes` (as) — move window to own workspace on open
+  - Defaults: always-on-top = `['org.gnome.Nautilus']`, isolated = `['Steam']`
+  - Title rules need `notify::title` subscription per window (async title setters like Telegram)
+  - Prefs UI: list editor with add/remove rows per setting
+  - make_above() in _onMap; isolated check in _handleNewWindow before _restoreInitialState
+
+- [ ] **UX-03: Unified always-on-top rules (class + title regex)**
+  Current `always-on-top-classes` only supports exact WM_CLASS match. Extend to support title
+  regex using `/pattern/` syntax in the same string array:
+  - Plain string → WM_CLASS exact match (e.g. `org.gnome.Nautilus`)
+  - `/regex/` → title regex match (e.g. `/Picture.in.Picture/`, `/ - PiP$/`)
+  Rename setting from `always-on-top-classes` to `always-on-top`.
+  For title rules: subscribe to `notify::title` on each window, store signal ID in `info`,
+  disconnect in `_onUnmanaged`. On match: `make_above()`; on unmatch: `unmake_above()`.
 
 - [x] **UX-01: PiP / skip_pager windows in indicator** ✓ resolved
   Filter: `!w.on_all_workspaces && !w.skip_pager && w.get_workspace() === ws`
