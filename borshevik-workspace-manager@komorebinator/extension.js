@@ -579,7 +579,14 @@ export default class BorshevikWorkspaceManager extends Extension {
             const layout = this._getLayout(info.layoutKey);
 
             if (!layout[side] || layout[side] === win) {
-                this._defer(() => { if (this._windows.has(win)) this._tileWindow(win, side); });
+                // Suppress stale second unmaximize event: Chrome/Mutter fires notify::maximized-*
+                // twice for one operation. Keep win in _suppress until the defer runs so the
+                // _onMaximizeChange guard at the top kills the duplicate before it reaches here.
+                this._suppress.add(win);
+                this._defer(() => {
+                    this._suppress.delete(win);
+                    if (this._windows.has(win)) this._tileWindow(win, side);
+                });
             } else {
                 // Side taken — restore to float
                 info.state = 'floating';
