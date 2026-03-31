@@ -372,12 +372,6 @@ export default class BorshevikWorkspaceManager extends Extension {
         if (!isTracked(win)) return;
         LOG('unmanaged:', win.get_wm_class());
 
-        // Capture workspace/monitor before clearing state
-        const closedSide = win._bwmState === 'tiled-left'  ? 'left'
-                         : win._bwmState === 'tiled-right' ? 'right' : null;
-        const ws  = win.get_workspace();
-        const mon = win.get_monitor();
-
         // Clear all extension state from the window
         delete win._bwmState;
         delete win._bwmFloatRect;
@@ -390,14 +384,10 @@ export default class BorshevikWorkspaceManager extends Extension {
         delete win._bwmJustMoved;
 
         this._pendingBatch?.delete(win);
-
-        if (ws)
-            this._defer(() => this._leaveIfEmpty(ws));
-        if (closedSide !== null && ws && mon >= 0)
-            this._defer(() => this._collapseIfPossible(ws, closedSide, mon));
     }
 
     _leaveIfEmpty(ws) {
+        LOG('leaveIfEmpty called: ws', ws?.index(), 'isOurs=', this._ourWorkspaces.has(ws), 'active=', global.workspace_manager.get_active_workspace()?.index());
         if (!this._ourWorkspaces.has(ws)) return;
         const wsIdx = ws.index();
         if (wsIdx < 0) return; // workspace already removed
@@ -1021,15 +1011,27 @@ export default class BorshevikWorkspaceManager extends Extension {
             const manager = global.workspace_manager;
             for (let i = 0; i < manager.get_n_workspaces(); i++) {
                 const ws = manager.get_workspace_by_index(i);
-                for (const w of ws.list_windows()) {
+                const wins = ws.list_windows();
+                // Build per-monitor sets for this workspace in one pass:
+                // covering windows (tiled/maximized/fullscreen) and floating windows.
+                const coveringByMon = new Map();
+                const floatingByMon = new Map();
+                for (const w of wins) {
                     if (!isTracked(w)) continue;
                     const mon = w.get_monitor();
+                    if (w.fullscreen || w._bwmState === 'maximized' || w._bwmState?.startsWith('tiled')) {
+                        if (!coveringByMon.has(mon)) coveringByMon.set(mon, true);
+                    } else if (w._bwmState === 'floating') {
+                        if (!floatingByMon.has(mon)) floatingByMon.set(mon, true);
+                    }
+                }
+                // Only check ws:mon pairs that have BOTH covering and floating windows.
+                for (const mon of coveringByMon.keys()) {
+                    if (!floatingByMon.has(mon)) continue;
                     const key = `${i}:${mon}`;
                     if (checked.has(key)) continue;
-                    if (w.fullscreen || w._bwmState === 'maximized' || w._bwmState?.startsWith('tiled')) {
-                        checked.add(key);
-                        this._checkCoveredFloaters(ws, mon);
-                    }
+                    checked.add(key);
+                    this._checkCoveredFloaters(ws, mon);
                 }
             }
             return GLib.SOURCE_REMOVE;
@@ -1311,6 +1313,15 @@ export default class BorshevikWorkspaceManager extends Extension {
         );
         const newWs = manager.get_workspace_by_index(newIdx);
         this._ourWorkspaces.add(newWs);
+        newWs.connect('window-removed', (_ws, win) => {
+            if (win._bwmMoving) return;
+            const closedSide = win._bwmState === 'tiled-left'  ? 'left'
+                             : win._bwmState === 'tiled-right' ? 'right' : null;
+            const mon = win.get_monitor();
+            this._defer(() => this._leaveIfEmpty(newWs));
+            if (closedSide !== null && mon >= 0)
+                this._defer(() => this._collapseIfPossible(newWs, closedSide, mon));
+        });
 
         for (const win of wins) {
             if (!isTracked(win)) continue;
@@ -1357,7 +1368,15 @@ export default class BorshevikWorkspaceManager extends Extension {
         );
         const newWs = manager.get_workspace_by_index(newIdx);
         this._ourWorkspaces.add(newWs);
-        // No _rebuildLayouts needed — state is on window objects, _ourWorkspaces uses objects
+        newWs.connect('window-removed', (_ws, win) => {
+            if (win._bwmMoving) return;
+            const closedSide = win._bwmState === 'tiled-left'  ? 'left'
+                             : win._bwmState === 'tiled-right' ? 'right' : null;
+            const mon = win.get_monitor();
+            this._defer(() => this._leaveIfEmpty(newWs));
+            if (closedSide !== null && mon >= 0)
+                this._defer(() => this._collapseIfPossible(newWs, closedSide, mon));
+        });
 
         win._bwmMoving = true;
         win.change_workspace_by_index(newIdx, false);
