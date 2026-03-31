@@ -24,5 +24,14 @@
       <default>['&lt;Super&gt;Right']</default>
       <summary>Tile focused window to the right</summary>
     </key>
+    <key name="open-rules-ui" type="as">
+      <default>['&lt;Super&gt;r']</default>
+      <summary>Open window rules UI</summary>
+    </key>
+    <key name="window-rules" type="s">
+      <default>'[]'</default>
+      <summary>Window rules</summary>
+      <description>JSON array of window rule objects with conditions and actions.</description>
+    </key>
   </schema>
 </schemalist>

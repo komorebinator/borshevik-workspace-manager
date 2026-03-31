@@ -47,3 +47,275 @@
 .bwm-ws-plus {
     opacity: 0.6;
 }
+
+/* ── Rules panel button ──────────────────────────────────────────────────── */
+
+.bwm-rules-panel-btn {
+    padding: 0 8px;
+    border-radius: 9999px;
+    transition-duration: 150ms;
+}
+
+.bwm-rules-panel-btn:hover {
+    background-color: rgba(255, 255, 255, 0.15);
+}
+
+/* ── Rules overlay ───────────────────────────────────────────────────────── */
+
+.bwm-rules-overlay {
+    background-color: #2b2b2b;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+}
+
+.bwm-rules-header {
+    padding: 12px 16px 8px;
+    spacing: 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.bwm-rules-title {
+    font-size: 15px;
+    font-weight: bold;
+    color: white;
+}
+
+.bwm-rules-tab {
+    padding: 4px 12px;
+    border-radius: 9999px;
+    color: rgba(255, 255, 255, 0.6);
+    font-size: 13px;
+}
+
+.bwm-rules-tab:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+    color: white;
+}
+
+.bwm-rules-tab-active {
+    background-color: rgba(255, 255, 255, 0.15);
+    color: white;
+}
+
+.bwm-rules-close {
+    padding: 4px;
+    border-radius: 9999px;
+    color: rgba(255, 255, 255, 0.6);
+}
+
+.bwm-rules-close:hover {
+    background-color: rgba(255, 255, 255, 0.15);
+    color: white;
+}
+
+.bwm-rules-separator {
+    height: 1px;
+    background-color: rgba(255, 255, 255, 0.08);
+}
+
+.bwm-rules-scroll {
+    padding: 8px;
+}
+
+.bwm-rules-list {
+    spacing: 4px;
+}
+
+.bwm-rules-empty {
+    padding: 32px;
+    color: rgba(255, 255, 255, 0.4);
+    font-size: 13px;
+}
+
+/* ── Window sections ─────────────────────────────────────────────────────── */
+
+.bwm-rules-section {
+    background-color: rgba(255, 255, 255, 0.05);
+    border-radius: 8px;
+    padding: 8px;
+    spacing: 4px;
+}
+
+.bwm-rules-win-row {
+    spacing: 10px;
+    padding-bottom: 6px;
+}
+
+.bwm-rules-win-icon {
+    min-width: 32px;
+}
+
+.bwm-rules-win-class {
+    font-size: 13px;
+    font-weight: bold;
+    color: white;
+}
+
+.bwm-rules-win-title {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.5);
+}
+
+.bwm-rules-new-btn {
+    padding: 4px 8px;
+    border-radius: 6px;
+    color: rgba(255, 255, 255, 0.5);
+    font-size: 12px;
+}
+
+.bwm-rules-new-btn:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+    color: white;
+}
+
+/* ── Rule rows ───────────────────────────────────────────────────────────── */
+
+.bwm-rules-rule-row {
+    background-color: rgba(255, 255, 255, 0.04);
+    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.bwm-rules-summary-row {
+    padding: 6px 10px;
+    spacing: 8px;
+    border-radius: 6px;
+}
+
+.bwm-rules-summary-row:hover {
+    background-color: rgba(255, 255, 255, 0.06);
+}
+
+.bwm-rules-summary-text {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.75);
+}
+
+.bwm-rules-chevron {
+    font-size: 10px;
+    color: rgba(255, 255, 255, 0.4);
+}
+
+.bwm-rules-detail {
+    padding: 8px 10px;
+    spacing: 4px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* ── Editor rows ─────────────────────────────────────────────────────────── */
+
+.bwm-rules-section-label {
+    font-size: 11px;
+    font-weight: bold;
+    color: rgba(255, 255, 255, 0.4);
+    padding-top: 4px;
+}
+
+.bwm-rules-row {
+    spacing: 8px;
+    padding: 2px 0;
+}
+
+.bwm-rules-row-label {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.8);
+    min-width: 120px;
+}
+
+.bwm-rules-entry {
+    font-size: 12px;
+    background-color: rgba(0, 0, 0, 0.3);
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    color: white;
+    padding: 2px 6px;
+}
+
+.bwm-entry-error {
+    border: 1px solid rgba(255, 80, 80, 0.8);
+}
+
+.bwm-rules-geom-box {
+    spacing: 2px;
+}
+
+.bwm-rules-geom-row {
+    spacing: 6px;
+    padding-left: 32px;
+}
+
+.bwm-rules-geom-label {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.5);
+}
+
+.bwm-rules-geom-entry {
+    font-size: 12px;
+    background-color: rgba(0, 0, 0, 0.3);
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    color: white;
+    padding: 2px 4px;
+    width: 48px;
+}
+
+/* ── Toggle buttons ──────────────────────────────────────────────────────── */
+
+.bwm-toggle {
+    font-size: 11px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    min-width: 32px;
+    background-color: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.4);
+}
+
+.bwm-toggle-on {
+    background-color: rgba(255, 255, 255, 0.06);
+    border: 1px solid -st-accent-color;
+    color: -st-accent-color;
+}
+
+/* ── Buttons row ─────────────────────────────────────────────────────────── */
+
+.bwm-rules-btn-row {
+    spacing: 8px;
+    padding-top: 8px;
+}
+
+.bwm-rules-save-btn {
+    padding: 4px 14px;
+    border-radius: 6px;
+    background-color: -st-accent-color;
+    color: white;
+    font-size: 12px;
+}
+
+.bwm-rules-save-btn:hover {
+    background-color: st-lighten(-st-accent-color, 10%);
+}
+
+.bwm-rules-cancel-btn {
+    padding: 4px 14px;
+    border-radius: 6px;
+    background-color: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 12px;
+}
+
+.bwm-rules-cancel-btn:hover {
+    background-color: rgba(255, 255, 255, 0.15);
+}
+
+.bwm-rules-del-btn {
+    padding: 4px 14px;
+    border-radius: 6px;
+    background-color: rgba(220, 80, 80, 0.3);
+    color: rgba(255, 150, 150, 0.9);
+    font-size: 12px;
+}
+
+.bwm-rules-del-btn:hover {
+    background-color: rgba(220, 80, 80, 0.5);
+}

@@ -11,6 +11,7 @@ import St    from 'gi://St';
 import Gio   from 'gi://Gio';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import { WindowRulesUI } from './window-rules-ui.js';
 
 let   LOG    = () => {};
 const SNAP_PX         = 32;
@@ -27,9 +28,11 @@ const MERGE_THRESHOLD = 0.30; // max fractional width mismatch allowed for tile 
 // win._bwmPendingGeom { x, y, w, h } | undefined  — queued geometry before first-frame
 // win._bwmFirstFrame bool — has first buffer commit fired
 // win._bwmHandled    bool — passed through handleNewWindow (batch dedup)
-// win._bwmMoving     bool — we initiated a workspace change (skip auto-tile)
-// win._bwmEvicting   bool — already scheduled for eviction (dedup)
-// win._bwmJustMoved  bool — user manually moved to this ws (skip coverage check once)
+// win._bwmMoving        bool      — we initiated a workspace change (skip auto-tile)
+// win._bwmEvicting      bool      — already scheduled for eviction (dedup)
+// win._bwmJustMoved     bool      — user manually moved to this ws (skip coverage check once)
+// win._bwmAppliedRules  Set<uuid> — UUIDs of window rules applied at map time
+// win._bwmForceNewWs    bool      — rule requests window opens on a new workspace
 
 const isTracked = win => win._bwmState !== undefined;
 
@@ -98,6 +101,11 @@ export default class BorshevikWorkspaceManager extends Extension {
         Main.wm.addKeybinding('tile-right', this._settings,
             Meta.KeyBindingFlags.NONE, Shell.ActionMode.NORMAL,
             () => this._tileKeyboard('right'));
+        Main.wm.addKeybinding('open-rules-ui', this._settings,
+            Meta.KeyBindingFlags.NONE, Shell.ActionMode.NORMAL,
+            () => this._rulesUI.toggle());
+
+        this._rulesUI = new WindowRulesUI(this);
 
         this._handles = [
             [global.window_manager,    global.window_manager.connect('map', (_, act) => this._onMap(act))],
@@ -119,6 +127,13 @@ export default class BorshevikWorkspaceManager extends Extension {
         Main.panel.statusArea['activities']?.hide();
         this._indicator = new St.BoxLayout({ style_class: 'bwm-indicator' });
         Main.panel._leftBox.insert_child_at_index(this._indicator, 0);
+
+        // Rules panel button
+        this._rulesPanelBtn = new St.Button({ style_class: 'bwm-rules-panel-btn', reactive: true });
+        this._rulesPanelBtn.set_child(new St.Icon({ icon_name: 'preferences-system-symbolic', icon_size: 16 }));
+        this._rulesPanelBtn.connect('clicked', () => this._rulesUI.toggle());
+        Main.panel._leftBox.insert_child_at_index(this._rulesPanelBtn, 1);
+
         this._scheduleIndicatorUpdate();
     }
 
@@ -146,6 +161,12 @@ export default class BorshevikWorkspaceManager extends Extension {
             GLib.source_remove(this._indicatorTimer);
             this._indicatorTimer = null;
         }
+        this._rulesUI.close();
+        this._rulesUI = null;
+
+        this._rulesPanelBtn.destroy();
+        this._rulesPanelBtn = null;
+
         this._indicator.destroy();
         this._indicator = null;
         Main.panel.statusArea['activities']?.show();
@@ -158,6 +179,7 @@ export default class BorshevikWorkspaceManager extends Extension {
 
         Main.wm.removeKeybinding('tile-left');
         Main.wm.removeKeybinding('tile-right');
+        Main.wm.removeKeybinding('open-rules-ui');
         this._mutterKbSettings.set_strv('toggle-tiled-left',  this._savedTileLeft);
         this._mutterKbSettings.set_strv('toggle-tiled-right', this._savedTileRight);
         this._mutterKbSettings = null;
@@ -244,6 +266,74 @@ export default class BorshevikWorkspaceManager extends Extension {
         }
     }
 
+    // ── Window rules ─────────────────────────────────────────────────────────
+
+    _applyWindowRules(win) {
+        let rules;
+        try   { rules = JSON.parse(this._settings.get_string('window-rules')); }
+        catch { return; }
+        if (!rules.length) return;
+
+        win._bwmAppliedRules = new Set();
+        for (const rule of rules)
+            this._applyRule(win, rule);
+    }
+
+    // Apply one rule to all currently tracked windows (called from UI on save).
+    _applyRuleToAll(rule) {
+        const manager = global.workspace_manager;
+        for (let i = 0; i < manager.get_n_workspaces(); i++)
+            for (const win of manager.get_workspace_by_index(i).list_windows())
+                if (isTracked(win)) this._applyRule(win, rule);
+    }
+
+    _matchesRule(win, rule) {
+        const c = rule.conditions;
+        if (c.class?.enabled) {
+            try { if (!new RegExp(c.class.regex).test(win.get_wm_class() ?? '')) return false; }
+            catch { return false; }
+        }
+        if (c.title?.enabled) {
+            try { if (!new RegExp(c.title.regex).test(win.get_title() ?? '')) return false; }
+            catch { return false; }
+        }
+        if (c.onAllWorkspaces?.enabled && !win.is_always_on_all_workspaces()) return false;
+        if (c.above?.enabled           && !win.above)                         return false;
+        if (c.skipTaskbar?.enabled     && !win.skip_taskbar)                  return false;
+        if (c.fullscreen?.enabled      && !win.fullscreen)                    return false;
+        if (c.maximized?.enabled       && !(win.maximized_horizontally && win.maximized_vertically)) return false;
+        return true;
+    }
+
+    _applyRule(win, rule) {
+        if (!this._matchesRule(win, rule)) return;
+        const a = rule.actions;
+        if (a.onAllWorkspaces?.enabled) {
+            if (a.onAllWorkspaces.value) win.stick();
+            else win.unstick();
+        }
+        if (a.above?.enabled) {
+            if (a.above.value) win.make_above();
+            else win.unmake_above();
+        }
+        if (a.openOnNewWorkspace?.enabled && a.openOnNewWorkspace.value && !win._bwmFirstFrame)
+            win._bwmForceNewWs = true;
+        if (a.geometry?.enabled) {
+            const wa = win.get_work_area_current_monitor();
+            const x  = Math.round(wa.x + wa.width  * a.geometry.x / 100);
+            const y  = Math.round(wa.y + wa.height * a.geometry.y / 100);
+            const w  = Math.round(wa.width  * a.geometry.w / 100);
+            const h  = Math.round(wa.height * a.geometry.h / 100);
+            if (win._bwmFirstFrame) {
+                win.move_resize_frame(true, x, y, w, h);
+            } else {
+                win._bwmRuleGeom = { x, y, w, h };
+            }
+        }
+        if (!win._bwmAppliedRules) win._bwmAppliedRules = new Set();
+        win._bwmAppliedRules.add(rule.id);
+    }
+
     // ── Small helpers ────────────────────────────────────────────────────────
 
     _isRelevant(win) {
@@ -302,12 +392,15 @@ export default class BorshevikWorkspaceManager extends Extension {
             `size=${r0.width}x${r0.height}`);
 
         // Initialise state on the window object itself
-        win._bwmState       = 'floating';
-        win._bwmPreMax      = undefined;
-        win._bwmFloatRect   = undefined;
-        win._bwmPendingGeom = undefined;
-        win._bwmFirstFrame  = false;
-        win._bwmHandled     = false;
+        win._bwmState        = 'floating';
+        win._bwmPreMax       = undefined;
+        win._bwmFloatRect    = undefined;
+        win._bwmPendingGeom  = undefined;
+        win._bwmFirstFrame   = false;
+        win._bwmHandled      = false;
+        win._bwmAppliedRules = new Set();
+
+        this._applyWindowRules(win);
 
         // Snapshot floatRect at map-time using reliable initial size
         if (!win.fullscreen && !win.maximized_horizontally && !win.maximized_vertically) {
@@ -334,6 +427,11 @@ export default class BorshevikWorkspaceManager extends Extension {
                     win._bwmPendingGeom = undefined;
                     LOG('first-frame: applying pending tile geometry for', win.get_wm_class(), `x=${x} w=${w}`);
                     win.move_frame(true, x, y);
+                    win.move_resize_frame(true, x, y, w, h);
+                } else if (win._bwmRuleGeom) {
+                    const { x, y, w, h } = win._bwmRuleGeom;
+                    win._bwmRuleGeom = undefined;
+                    LOG('first-frame: applying rule geometry for', win.get_wm_class());
                     win.move_resize_frame(true, x, y, w, h);
                 }
             });
@@ -385,6 +483,9 @@ export default class BorshevikWorkspaceManager extends Extension {
         delete win._bwmMoving;
         delete win._bwmEvicting;
         delete win._bwmJustMoved;
+        delete win._bwmAppliedRules;
+        delete win._bwmForceNewWs;
+        delete win._bwmRuleGeom;
 
         this._pendingBatch?.delete(win);
     }
@@ -904,6 +1005,12 @@ export default class BorshevikWorkspaceManager extends Extension {
     _handleNewWindow(win) {
         if (!isTracked(win)) return;
         win._bwmHandled = true;
+
+        if (win._bwmForceNewWs) {
+            delete win._bwmForceNewWs;
+            this._moveToNewWorkspace(win);
+            return;
+        }
 
         const ws  = win.get_workspace();
         if (!ws) return;

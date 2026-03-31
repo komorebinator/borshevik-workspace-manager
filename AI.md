@@ -480,23 +480,93 @@ not consulted again once `info.floatRect` is set.
 
 ### UX / Polish
 
-- [ ] **UX-04: Always-on-top and isolated-workspace class lists**
-  Reverted (too much new surface while core bugs unfixed). When re-implementing:
-  - Schema: `always-on-top` (as) with `/regex/` syntax for title rules + plain string for WM_CLASS
-  - Schema: `isolated-workspace-classes` (as) — move window to own workspace on open
-  - Defaults: always-on-top = `['org.gnome.Nautilus']`, isolated = `['Steam']`
-  - Title rules need `notify::title` subscription per window (async title setters like Telegram)
-  - Prefs UI: list editor with add/remove rows per setting
-  - make_above() in _onMap; isolated check in _handleNewWindow before _restoreInitialState
+- [ ] **UX-03: superseded by UX-05**
+- [ ] **UX-04: superseded by UX-05**
 
-- [ ] **UX-03: Unified always-on-top rules (class + title regex)**
-  Current `always-on-top-classes` only supports exact WM_CLASS match. Extend to support title
-  regex using `/pattern/` syntax in the same string array:
-  - Plain string → WM_CLASS exact match (e.g. `org.gnome.Nautilus`)
-  - `/regex/` → title regex match (e.g. `/Picture.in.Picture/`, `/ - PiP$/`)
-  Rename setting from `always-on-top-classes` to `always-on-top`.
-  For title rules: subscribe to `notify::title` on each window, store signal ID in `info`,
-  disconnect in `_onUnmanaged`. On match: `make_above()`; on unmatch: `unmake_above()`.
+- [ ] **UX-05: Window Rules UI** *(designed 2026-03-31, not yet implemented)*
+  **Approach:** St/Clutter UI running inside the Shell process — no subprocess, no D-Bus, no IPC.
+  Window data accessed directly via `global.display`. Titles/classes never leave the Shell process.
+
+  **Files:**
+  - `window-rules-ui.js` — new ES module, imported by `extension.js`. Exports `WindowRulesUI` class.
+    Contains all St/Clutter widget code (~520 lines).
+  - `extension.js` — adds trigger, `_applyWindowRules(win)` called from `_onMap`,
+    `_applyRule(rule, wins)` for targeted re-application (~70 lines added).
+  - `schema.xml` — adds `window-rules` key (type `s`, default `'[]'`).
+
+  **UI structure:** modal overlay via `Main.pushModal()` + St widget added to
+  `Main.layoutManager.addTopChrome()` — renders above all application windows on all workspaces.
+  St widgets in the Shell compositor layer are workspace-agnostic by nature (not MetaWindows).
+  Closed via X button only. Two tabs, switched via header button row:
+
+  **Tab 1 — Windows** (current workspace):
+  Scrollable `St.ScrollView` → `St.BoxLayout` (vertical). One section per relevant window:
+  - Header row: icon (`Shell.WindowTracker → app.create_icon_texture(32)`, null-checked) +
+    wm_class + title.
+  - Below header: list of applied rules (from `win._bwmAppliedRules`), each expandable inline
+    (accordion — toggle `visible` on detail `St.BoxLayout`).
+  - "New rule for this window" button → appends a new expanded inline editor pre-filled with
+    window's class/title/geometry.
+
+  **Tab 2 — All rules**:
+  Scrollable list of all saved rules. Each row is a collapsed summary
+  (e.g. `class ~ ^chrome-  →  above`) expandable inline to the full editor.
+  "New rule" button at top → appends blank expanded editor.
+
+  **Inline rule editor** (shared layout, built by `_buildRuleEditor(rule, onSave, onDelete)`):
+  - Conditions section — each condition: toggle-button (checked/unchecked via CSS) + label +
+    optional St.Entry (regex) or value-toggle (bool). `class` on by default.
+    At least one condition must be enabled — Save button disabled otherwise.
+    Invalid regex → St.Entry gets `error` CSS class (red border).
+  - Actions section — same pattern, all OFF by default.
+  - Save + Delete buttons. Save → updates GSettings + calls `_applyRule(rule)` on extension.
+    Delete → removes from GSettings array (no undo of applied effects).
+
+  **Trigger methods:**
+  - Panel button: `St.Button` added to `_indicator` in the panel bar. Click → open/close toggle.
+  - Keyboard shortcut: `Main.wm.addKeybinding('open-rules-ui', ...)`, schema key `open-rules-ui`
+    (type `as`, default `[]`), configurable in prefs.
+  - Future: button on WindowPreview in overview (experiment later).
+
+  **Opening to a specific tab/window:** `WindowRulesUI` constructor accepts optional
+  `{ tab, win }` — callers (e.g. future panel right-click) can open pre-focused on a window.
+
+  **Storage:** GSettings key `window-rules` (type `s`), JSON array:
+  ```json
+  [{ "conditions": { "class":          { "enabled": true,  "regex": "^chrome-" },
+                     "title":          { "enabled": false, "regex": "" },
+                     "onAllWorkspaces":{ "enabled": false, "value": false },
+                     "above":          { "enabled": false, "value": false },
+                     "skipTaskbar":    { "enabled": false, "value": false },
+                     "fullscreen":     { "enabled": false, "value": false },
+                     "maximized":      { "enabled": false, "value": false } },
+     "actions":    { "onAllWorkspaces":{ "enabled": false, "value": true },
+                     "above":          { "enabled": true,  "value": true },
+                     "geometry":       { "enabled": false, "x": 10, "y": 10, "w": 80, "h": 80 } }
+  }]
+  ```
+
+  **Rule identity:** each rule has a `"id"` field (UUID, generated via `GLib.uuid_string_random()`
+  at creation time). Stable across reordering and deletion.
+
+  **Tracking on window:** `win._bwmAppliedRules = new Set([uuid, ...])` — stored alongside other
+  `_bwm*` state fields. Set in `_applyWindowRules`, cleared in `_onUnmanaged`. View 1 reads this
+  to show which rules were actually applied to each window at map time.
+
+  **Rule application — three paths:**
+  1. `_applyWindowRules(win)` — called from `_onMap`. Iterates all rules in order, evaluates
+     conditions (regex: `new RegExp(r.regex).test(value)`), applies all enabled actions of ALL
+     matching rules in order (later rules can override earlier ones). Records matched rule UUIDs
+     in `win._bwmAppliedRules`.
+     Geometry applied as % of `win.get_work_area_for_monitor(mon)`, via `_bwmPendingGeom`
+     mechanism (respects first-frame constraint, same as tiling).
+  2. `_applyRule(rule, wins)` — called directly by UI after save. Applies one specific rule to
+     all currently open windows (`global.display.list_windows()`). Updates `win._bwmAppliedRules`
+     accordingly. Geometry applied immediately (window already has a frame).
+  3. On extension enable: `_applyWindowRules(win)` called for all existing windows to restore
+     persistent rules after Shell restart.
+
+  **Subsumes UX-03 and UX-04** (always-on-top, isolated-workspace handled via rule actions).
 
 - [x] **UX-01: PiP / skip_pager windows in indicator** ✓ resolved
   Filter: `!w.on_all_workspaces && !w.skip_pager && w.get_workspace() === ws`
