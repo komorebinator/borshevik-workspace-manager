@@ -201,8 +201,11 @@ export default class BorshevikWorkspaceManager extends Extension {
 
         for (let i = 0; i < nWs; i++) {
             const ws = wm.get_workspace_by_index(i);
+            const winOrder = w => w.fullscreen ? 0 : w._bwmState === 'maximized' ? 1
+                                : w._bwmState === 'tiled-left' ? 2 : w._bwmState === 'tiled-right' ? 3 : 4;
             const wins = ws.list_windows()
-                .filter(w => this._isRelevant(w) && !w.on_all_workspaces && !w.skip_pager && w.get_workspace() === ws);
+                .filter(w => this._isRelevant(w) && !w.on_all_workspaces && !w.skip_pager && w.get_workspace() === ws)
+                .sort((a, b) => winOrder(a) - winOrder(b));
 
             const isLast = i === nWs - 1 && wins.length === 0;
 
@@ -399,10 +402,18 @@ export default class BorshevikWorkspaceManager extends Extension {
             .some(w => !w.is_always_on_all_workspaces() && this._isRelevant(w));
         if (hasWindows) return;
 
-        const target = manager.get_workspace_by_index(wsIdx - 1);
-        if (!target) return; // leftmost — nothing to the left
+        let target = manager.get_workspace_by_index(wsIdx - 1);
+        if (!target) {
+            // Leftmost workspace — try right if it has windows
+            const right = manager.get_workspace_by_index(wsIdx + 1);
+            if (!right) return;
+            const rightHasWindows = right.list_windows()
+                .some(w => !w.is_always_on_all_workspaces() && this._isRelevant(w));
+            if (!rightHasWindows) return;
+            target = right;
+        }
 
-        LOG('leaveIfEmpty: ws', wsIdx, '→ ws', wsIdx - 1, '(our workspace, now empty)');
+        LOG('leaveIfEmpty: ws', wsIdx, '→ ws', target.index(), '(our workspace, now empty)');
         this._ourWorkspaces.delete(ws);
         target.activate(global.get_current_time());
     }
@@ -1074,7 +1085,7 @@ export default class BorshevikWorkspaceManager extends Extension {
             if (floatIdx === -1) continue;
 
             const floatRect = floatWin.get_frame_rect();
-            const covered   = this._isFullyCovered(floatRect, coveringWins, floatIdx, sorted);
+            const covered   = this._isFullyCovered(floatRect, coveringWins, floatIdx, sorted, wa);
             LOG('  floater:', floatWin.get_wm_class(), `z=${floatIdx} covered=${covered}`);
             if (covered) coveredFloaters.push(floatWin);
         }
@@ -1093,9 +1104,14 @@ export default class BorshevikWorkspaceManager extends Extension {
             this._moveBatchToNewWorkspace(needNewWs);
     }
 
-    _isFullyCovered(floatRect, coveringWins, floatZ, sorted) {
-        const floatL = floatRect.x;
-        const floatR = floatRect.x + floatRect.width;
+    _isFullyCovered(floatRect, coveringWins, floatZ, sorted, wa) {
+        // Clip to visible (on-screen) area — off-screen portions are not visible
+        const floatL = Math.max(floatRect.x, wa.x);
+        const floatR = Math.min(floatRect.x + floatRect.width,  wa.x + wa.width);
+        const floatT = Math.max(floatRect.y, wa.y);
+        const floatB = Math.min(floatRect.y + floatRect.height, wa.y + wa.height);
+        if (floatL >= floatR || floatT >= floatB) return true; // entirely off-screen
+
         const intervals = [];
         for (const cw of coveringWins) {
             const cwIdx = sorted.indexOf(cw);
