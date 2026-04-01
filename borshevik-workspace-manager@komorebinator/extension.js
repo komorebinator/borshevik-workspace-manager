@@ -1017,6 +1017,7 @@ export default class BorshevikWorkspaceManager extends Extension {
             if (w === win) continue;
             if (!isTracked(w)) continue;
             if (w.get_monitor() !== mon) continue;
+            if (w.is_always_on_all_workspaces()) continue;
             if (!winIsBlocking && this._currentBatch?.has(w) && !w._bwmHandled) continue;
             hasExistingOther = true;
             break;
