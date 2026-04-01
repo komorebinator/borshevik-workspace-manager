@@ -128,12 +128,6 @@ export default class BorshevikWorkspaceManager extends Extension {
         this._indicator = new St.BoxLayout({ style_class: 'bwm-indicator' });
         Main.panel._leftBox.insert_child_at_index(this._indicator, 0);
 
-        // Rules panel button
-        this._rulesPanelBtn = new St.Button({ style_class: 'bwm-rules-panel-btn', reactive: true });
-        this._rulesPanelBtn.set_child(new St.Icon({ icon_name: 'preferences-system-symbolic', icon_size: 16 }));
-        this._rulesPanelBtn.connect('clicked', () => this._rulesUI.toggle());
-        Main.panel._leftBox.insert_child_at_index(this._rulesPanelBtn, 1);
-
         this._scheduleIndicatorUpdate();
     }
 
@@ -163,9 +157,6 @@ export default class BorshevikWorkspaceManager extends Extension {
         }
         this._rulesUI.close();
         this._rulesUI = null;
-
-        this._rulesPanelBtn.destroy();
-        this._rulesPanelBtn = null;
 
         this._indicator.destroy();
         this._indicator = null;

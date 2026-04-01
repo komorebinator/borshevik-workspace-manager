@@ -48,18 +48,6 @@
     opacity: 0.6;
 }
 
-/* ── Rules panel button ──────────────────────────────────────────────────── */
-
-.bwm-rules-panel-btn {
-    padding: 0 8px;
-    border-radius: 9999px;
-    transition-duration: 150ms;
-}
-
-.bwm-rules-panel-btn:hover {
-    background-color: rgba(255, 255, 255, 0.15);
-}
-
 /* ── Rules overlay ───────────────────────────────────────────────────────── */
 
 .bwm-rules-overlay {
