@@ -32,7 +32,7 @@ const MERGE_THRESHOLD = 0.30; // max fractional width mismatch allowed for tile 
 // win._bwmEvicting      bool      — already scheduled for eviction (dedup)
 // win._bwmJustMoved     bool      — user manually moved to this ws (skip coverage check once)
 // win._bwmAppliedRules  Set<uuid> — UUIDs of window rules applied at map time
-// win._bwmForceNewWs    bool      — rule requests window opens on a new workspace
+// win._bwmForceNewWs    string    — rule id requesting window opens on a dedicated workspace
 
 const isTracked = win => win._bwmState !== undefined;
 
@@ -288,7 +288,7 @@ export default class BorshevikWorkspaceManager extends Extension {
             try { if (!new RegExp(c.title.regex).test(win.get_title() ?? '')) return false; }
             catch { return false; }
         }
-        if (c.onAllWorkspaces?.enabled && !win.is_always_on_all_workspaces()) return false;
+        if (c.onAllWorkspaces?.enabled && !win.is_on_all_workspaces()) return false;
         if (c.above?.enabled           && !win.above)                         return false;
         if (c.skipTaskbar?.enabled     && !win.skip_taskbar)                  return false;
         if (c.fullscreen?.enabled      && !win.fullscreen)                    return false;
@@ -308,7 +308,7 @@ export default class BorshevikWorkspaceManager extends Extension {
             else win.unmake_above();
         }
         if (a.openOnNewWorkspace?.enabled && a.openOnNewWorkspace.value && !win._bwmFirstFrame)
-            win._bwmForceNewWs = true;
+            win._bwmForceNewWs = rule.id;
         if (a.geometry?.enabled) {
             const wa = win.get_work_area_current_monitor();
             const x  = Math.round(wa.x + wa.width  * a.geometry.x / 100);
@@ -327,10 +327,14 @@ export default class BorshevikWorkspaceManager extends Extension {
 
     // ── Small helpers ────────────────────────────────────────────────────────
 
+    _isPrimary(mon) {
+        return mon === Main.layoutManager.primaryIndex;
+    }
+
     _isRelevant(win) {
         return win.window_type === Meta.WindowType.NORMAL &&
             !win.skip_taskbar &&
-            !win.is_always_on_all_workspaces();
+            !win.is_on_all_workspaces();
     }
 
     _defer(fn) {
@@ -372,7 +376,7 @@ export default class BorshevikWorkspaceManager extends Extension {
 
     _onMap(act) {
         const win = act.meta_window;
-        LOG('map-raw:', win.get_wm_class(), `type=${win.window_type} skip=${win.skip_taskbar} sticky=${win.is_always_on_all_workspaces()}`);
+        LOG('map-raw:', win.get_wm_class(), `type=${win.window_type} skip=${win.skip_taskbar} sticky=${win.is_on_all_workspaces()}`);
         if (!this._isRelevant(win)) return;
 
         const r0 = win.get_frame_rect();
@@ -491,7 +495,7 @@ export default class BorshevikWorkspaceManager extends Extension {
         if (manager.get_active_workspace() !== ws) return; // user moved away already
 
         const hasWindows = ws.list_windows()
-            .some(w => !w.is_always_on_all_workspaces() && this._isRelevant(w));
+            .some(w => !w.is_on_all_workspaces() && this._isRelevant(w));
         if (hasWindows) return;
 
         let target = manager.get_workspace_by_index(wsIdx - 1);
@@ -500,7 +504,7 @@ export default class BorshevikWorkspaceManager extends Extension {
             const right = manager.get_workspace_by_index(wsIdx + 1);
             if (!right) return;
             const rightHasWindows = right.list_windows()
-                .some(w => !w.is_always_on_all_workspaces() && this._isRelevant(w));
+                .some(w => !w.is_on_all_workspaces() && this._isRelevant(w));
             if (!rightHasWindows) return;
             target = right;
         }
@@ -550,7 +554,7 @@ export default class BorshevikWorkspaceManager extends Extension {
             if (this._moveWhenMax) {
                 const ws  = win.get_workspace();
                 const mon = win.get_monitor();
-                if (ws && this._hasOtherWindows(ws, mon, win))
+                if (ws && this._isPrimary(mon) && this._hasOtherWindows(ws, mon, win))
                     this._defer(() => this._moveToNewWorkspace(win));
             }
         } else {
@@ -998,8 +1002,10 @@ export default class BorshevikWorkspaceManager extends Extension {
         win._bwmHandled = true;
 
         if (win._bwmForceNewWs) {
+            const ruleId = win._bwmForceNewWs;
             delete win._bwmForceNewWs;
-            this._moveToNewWorkspace(win);
+            if (this._isPrimary(win.get_monitor()))
+                this._moveToRuleWorkspace(win, ruleId);
             return;
         }
 
@@ -1015,10 +1021,11 @@ export default class BorshevikWorkspaceManager extends Extension {
         let hasExistingOther = false;
         for (const w of ws.list_windows()) {
             if (w === win) continue;
-            if (!isTracked(w)) continue;
-            if (w.get_monitor() !== mon) continue;
-            if (w.is_always_on_all_workspaces()) continue;
+            if (!isTracked(w)) { LOG('hasExisting: skip (untracked)', w.get_wm_class()); continue; }
+            if (w.get_monitor() !== mon) { LOG('hasExisting: skip (wrong mon)', w.get_wm_class()); continue; }
+            if (w.is_on_all_workspaces()) { LOG('hasExisting: skip (allws)', w.get_wm_class()); continue; }
             if (!winIsBlocking && this._currentBatch?.has(w) && !w._bwmHandled) continue;
+            LOG('hasExisting: COUNTED', w.get_wm_class(), 'sticky=', w.is_on_all_workspaces(), 'tracked=', isTracked(w));
             hasExistingOther = true;
             break;
         }
@@ -1029,7 +1036,7 @@ export default class BorshevikWorkspaceManager extends Extension {
             `left=${layout.left?.get_wm_class() ?? '-'} right=${layout.right?.get_wm_class() ?? '-'}`,
             `existing=${hasExistingOther} slots=${slotsUsed} blocking=${winIsBlocking}`);
 
-        if (winIsBlocking && (hasExistingOther || slotsUsed >= 1)) {
+        if (winIsBlocking && (hasExistingOther || slotsUsed >= 1) && this._isPrimary(mon)) {
             this._moveToNewWorkspace(win);
             return;
         }
@@ -1040,6 +1047,7 @@ export default class BorshevikWorkspaceManager extends Extension {
     /** If there is a maximized/fullscreen blocker on ws:mon, schedule its eviction to the left. */
     _evictBlockerIfPresent(ws, mon, excludeWin = null) {
         if (!this._moveWhenMax || !ws) return;
+        if (!this._isPrimary(mon)) return;
         for (const w of ws.list_windows()) {
             if (w === excludeWin) continue;
             if (!isTracked(w)) continue;
@@ -1163,7 +1171,7 @@ export default class BorshevikWorkspaceManager extends Extension {
         const wa = coveringWins[0].get_work_area_for_monitor(mon);
 
         const allWins = ws.list_windows().filter(w =>
-            w.get_monitor() === mon && !w.is_always_on_all_workspaces()
+            w.get_monitor() === mon && !w.is_on_all_workspaces()
         );
         const sorted   = global.display.sort_windows_by_stacking(allWins);
         const freeArea = this._getFreeArea(ws, mon, wa);
@@ -1174,7 +1182,7 @@ export default class BorshevikWorkspaceManager extends Extension {
             if (floatWin.get_monitor() !== mon) continue;
             if (floatWin._bwmState !== 'floating') continue;
             if (floatWin.above) continue;
-            if (floatWin.is_always_on_all_workspaces()) continue;
+            if (floatWin.is_on_all_workspaces()) continue;
             if (floatWin._bwmJustMoved) { floatWin._bwmJustMoved = false; continue; }
             if (floatWin._bwmMoving) continue;
             const parent = floatWin.get_transient_for();
@@ -1299,7 +1307,7 @@ export default class BorshevikWorkspaceManager extends Extension {
     _wsIsClean(ws, mon, excludeWin) {
         const wins = ws.list_windows().filter(w =>
             w.get_monitor() === mon &&
-            !w.is_always_on_all_workspaces() &&
+            !w.is_on_all_workspaces() &&
             !w.minimized &&
             this._isRelevant(w) &&
             w !== excludeWin
@@ -1450,6 +1458,42 @@ export default class BorshevikWorkspaceManager extends Extension {
         });
     }
 
+    _moveToRuleWorkspace(win, ruleId) {
+        const manager = global.workspace_manager;
+        const currentWs = win.get_workspace();
+
+        // 1. Find a workspace that already has a window from the same rule
+        for (let i = 0; i < manager.get_n_workspaces(); i++) {
+            const ws = manager.get_workspace_by_index(i);
+            for (const w of ws.list_windows()) {
+                if (w !== win && w._bwmAppliedRules?.has(ruleId)) {
+                    LOG('moveToRuleWorkspace:', win.get_wm_class(), '→ existing rule ws', i);
+                    win._bwmMoving = true;
+                    win.change_workspace(ws);
+                    if (manager.get_active_workspace() !== ws)
+                        ws.activate(global.get_current_time());
+                    this._defer(() => { delete win._bwmMoving; });
+                    return;
+                }
+            }
+        }
+
+        // 2. Current workspace has no other tracked windows — stay here
+        if (currentWs) {
+            const hasOther = currentWs.list_windows().some(
+                w => w !== win && isTracked(w) && !w.is_on_all_workspaces()
+            );
+            if (!hasOther) {
+                LOG('moveToRuleWorkspace:', win.get_wm_class(), '— current ws is empty, staying');
+                return;
+            }
+        }
+
+        // 3. Need a fresh workspace
+        LOG('moveToRuleWorkspace:', win.get_wm_class(), '— creating new ws');
+        this._moveToNewWorkspace(win);
+    }
+
     _moveToNewWorkspace(win, tileOnArrive = null, direction = 'right') {
         if (this._moveInFlight) {
             LOG('moveToNewWorkspace: queued', win.get_wm_class());
@@ -1464,7 +1508,7 @@ export default class BorshevikWorkspaceManager extends Extension {
         LOG('moveToNewWorkspace:', win.get_wm_class(),
             tileOnArrive ? `tileOnArrive=${tileOnArrive}` : '', `dir=${direction}`);
 
-        if (win.is_always_on_all_workspaces()) {
+        if (win.is_on_all_workspaces()) {
             LOG('moveToNewWorkspace: skipping sticky window', win.get_wm_class());
             this._finishMove(win);
             return;
