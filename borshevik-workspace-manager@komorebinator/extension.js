@@ -343,15 +343,23 @@ export default class BorshevikWorkspaceManager extends Extension {
 
     _toRect(r) { return { x: r.x, y: r.y, width: r.width, height: r.height }; }
 
-    _saveFloatSize(wmClass, wr, hr) {
+    // Capture float geometry from a floating window and persist it.
+    // Called ONLY from manual tile actions: _tileKeyboard and _finalizeDrag.
+    _captureAndSaveFloatGeom(win) {
+        if (win._bwmState !== 'floating') return;
+        const wa = win.get_work_area_current_monitor();
+        const fr = win.get_frame_rect();
+        win._bwmFloatRect = this._toRect(fr);
+        const geom = { xr: (fr.x - wa.x) / wa.width,  yr: (fr.y - wa.y) / wa.height,
+                       wr:  fr.width      / wa.width,  hr:  fr.height     / wa.height };
         try {
             const map = JSON.parse(this._settings.get_string('float-sizes'));
-            map[wmClass] = { wr, hr };
+            map[win.get_wm_class()] = geom;
             this._settings.set_string('float-sizes', JSON.stringify(map));
         } catch (_) {}
     }
 
-    _loadFloatSize(wmClass) {
+    _loadFloatGeom(wmClass) {
         try {
             const map = JSON.parse(this._settings.get_string('float-sizes'));
             return map[wmClass] ?? null;
@@ -397,18 +405,16 @@ export default class BorshevikWorkspaceManager extends Extension {
 
         this._applyWindowRules(win);
 
-        // Snapshot floatRect at map-time using reliable initial size
-        if (!win.fullscreen && !win.maximized_horizontally && !win.maximized_vertically) {
+        // Seed _bwmFloatRect from saved geometry if available (no save — only manual tile saves)
+        if (!win.fullscreen) {
             const wa0   = win.get_work_area_current_monitor();
-            const saved = this._loadFloatSize(win.get_wm_class());
-            if (saved) {
-                win._bwmFloatRect = { x: r0.x, y: r0.y,
+            const saved = this._loadFloatGeom(win.get_wm_class());
+            win._bwmFloatRect = saved
+                ? { x: Math.round(wa0.x + wa0.width  * saved.xr),
+                    y: Math.round(wa0.y + wa0.height * saved.yr),
                     width:  Math.round(wa0.width  * saved.wr),
-                    height: Math.round(wa0.height * saved.hr) };
-            } else {
-                win._bwmFloatRect = this._toRect(r0);
-                this._saveFloatSize(win.get_wm_class(), r0.width / wa0.width, r0.height / wa0.height);
-            }
+                    height: Math.round(wa0.height * saved.hr) }
+                : this._toRect(r0);
         }
 
         // Hook first-frame now so we catch it even for fast-starting apps
@@ -726,19 +732,11 @@ export default class BorshevikWorkspaceManager extends Extension {
                 if (win._bwmState === 'tiled-left' || win._bwmState === 'tiled-right') {
                     LOG('drag: threshold crossed — detaching tile', win.get_wm_class());
                     win._bwmState = 'floating';
-                    if (!win._bwmFloatRect) {
-                        const saved = this._loadFloatSize(win.get_wm_class());
-                        if (saved) {
-                            const fr = win.get_frame_rect();
-                            win._bwmFloatRect = { x: fr.x, y: fr.y,
-                                width:  Math.round(wa.width  * saved.wr),
-                                height: Math.round(wa.height * saved.hr) };
-                        }
-                    }
-                    if (win._bwmFloatRect) {
+                    const saved = this._loadFloatGeom(win.get_wm_class());
+                    if (saved) {
                         const cur = win.get_frame_rect();
                         win.move_resize_frame(false, cur.x, cur.y,
-                            win._bwmFloatRect.width, win._bwmFloatRect.height);
+                            Math.round(wa.width * saved.wr), Math.round(wa.height * saved.hr));
                     }
                 }
                 this._drag.tiledSide = null;
@@ -787,12 +785,7 @@ export default class BorshevikWorkspaceManager extends Extension {
         if (this._snapSide === 'maximize') {
             this._doMaximize(win);
         } else {
-            if (win._bwmFloatRect) {
-                const wa = win.get_work_area_for_monitor(this._drag.monitor);
-                this._saveFloatSize(win.get_wm_class(),
-                    win._bwmFloatRect.width  / wa.width,
-                    win._bwmFloatRect.height / wa.height);
-            }
+            this._captureAndSaveFloatGeom(win);
             const ws  = win.get_workspace();
             const mon = this._drag.monitor;
             this._evictBlockerIfPresent(ws, mon, win);
@@ -840,13 +833,10 @@ export default class BorshevikWorkspaceManager extends Extension {
         const layout = this._getLayout(ws, mon);
         const other  = side === 'left' ? 'right' : 'left';
 
-        // Snapshot float rect before any state changes (only if currently floating)
-        if (win._bwmState === 'floating') {
-            const fr = win.get_frame_rect();
-            win._bwmFloatRect = this._toRect(fr);
-            if (!win.fullscreen && !win.maximized_horizontally && !win.maximized_vertically)
-                this._saveFloatSize(win.get_wm_class(), fr.width / wa.width, fr.height / wa.height);
-        }
+        // Snapshot float rect before any state changes (only if currently floating).
+        // Geometry is NOT saved here — only _captureAndSaveFloatGeom (manual tile) does that.
+        if (win._bwmState === 'floating')
+            win._bwmFloatRect = this._toRect(win.get_frame_rect());
 
         LOG('tileWindow:', win.get_wm_class(), `→ ${side} state=${win._bwmState}`,
             `left=${layout.left?.get_wm_class() ?? '-'} right=${layout.right?.get_wm_class() ?? '-'}`);
@@ -1083,6 +1073,7 @@ export default class BorshevikWorkspaceManager extends Extension {
             win._bwmState = 'floating';
             this._doFloat(win);
         } else {
+            this._captureAndSaveFloatGeom(win);
             const ws  = win.get_workspace();
             const mon = win.get_monitor();
             this._evictBlockerIfPresent(ws, mon, win);

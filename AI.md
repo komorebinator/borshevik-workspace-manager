@@ -289,10 +289,8 @@ Tab-detach creates a window without firing `map` on Wayland. Fixed by late-regis
 
 ### floatRect ownership
 The extension fully owns tiling geometry. Apps (including Nautilus) do NOT asynchronously restore
-their own session geometry — we move_resize_frame them and that's final. At tile time, `_tileWindow`
-always snapshots the full current frame rect (position + size) as `floatRect`. Map-time code also
-sets `floatRect` from GSettings if available (for position init), but this is overridden at tile
-time.
+their own session geometry — we move_resize_frame them and that's final. Float rect is captured
+ONLY from manual tile actions — see "float-sizes GSettings — CRITICAL INVARIANT" below.
 
 ### First-frame / pending geometry
 On Wayland, `move_resize_frame` sent before the window's first buffer commit is ignored. If
@@ -325,11 +323,27 @@ it empties.
 `info.state === 'floating'` is always false when called from `_tileWindow`. The float-rect block
 in `_doTile` only runs for _onUnmanaged fill-gap calls where state hasn't been changed yet.
 
-### float-sizes GSettings
-Float sizes stored as JSON string: `{ "WMClass": { wr: 0.55, hr: 0.55 }, ... }`. Used to seed
-`floatRect` when a window is first ever tiled (no prior floatRect in memory). Saved at map-time.
-On subsequent tiles, `_tileWindow` always snapshots the full current frame rect — GSettings is
-not consulted again once `info.floatRect` is set.
+### float-sizes GSettings — CRITICAL INVARIANT
+Float sizes stored as JSON string: `{ "WMClass": { wr: 0.55, hr: 0.55 }, ... }`.
+
+**`_saveFloatSize` and `win._bwmFloatRect` MUST only be set from manual tile actions:**
+- `_tileKeyboard` — Win+Left/Right when window is floating → capture before calling `_tileWindow`
+- `_finalizeDrag` — drag-to-snap when window is floating → already captures from `win._bwmFloatRect`
+
+**NEVER call `_saveFloatSize` from `_tileWindow` directly.** `_tileWindow` is called from both
+manual AND automatic paths (`_restoreInitialState`, `_displaceTile`, workspace-arrive), and some
+apps (e.g. MissionCenter) remember their last tile geometry between sessions — they open at tile
+dimensions. If `_tileWindow` saves those dimensions as float proportions, the user's actual float
+geometry is permanently corrupted.
+
+**How the regression happened:** BUG-01 fix ("always snapshot full frame rect") added a block at
+the top of `_tileWindow` that captured `_bwmFloatRect` and called `_saveFloatSize` whenever
+`win._bwmState === 'floating'`. This was correct for manual tile but broke auto-tile paths because
+`_restoreInitialState` calls `_tileWindow` with `_bwmState === 'floating'` and a tile-sized rect.
+
+**Rule to avoid re-regression:** `_tileWindow` must not contain any call to `_saveFloatSize` and
+must not set `win._bwmFloatRect`. Float capture is exclusively the caller's responsibility when
+the caller knows the action is manual.
 
 ---
 
