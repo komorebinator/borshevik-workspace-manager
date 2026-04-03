@@ -16,7 +16,6 @@ import { WindowRulesUI } from './window-rules-ui.js';
 let   LOG    = () => {};
 const SNAP_PX         = 32;
 const DRAG_THRESHOLD  = 20;   // px cursor must travel before snap zones activate
-const MERGE_THRESHOLD = 0.30; // max fractional width mismatch allowed for tile merging
 
 // Window is managed by us if it has _bwmState set.
 // State lives on the window object itself — survives workspace index shifts,
@@ -1295,120 +1294,11 @@ export default class BorshevikWorkspaceManager extends Extension {
 
     // ── Tile displacement & workspace collapsing ─────────────────────────────
 
-    _wsIsClean(ws, mon, excludeWin) {
-        const wins = ws.list_windows().filter(w =>
-            w.get_monitor() === mon &&
-            !w.is_on_all_workspaces() &&
-            !w.minimized &&
-            this._isRelevant(w) &&
-            w !== excludeWin
-        );
-        for (const w of wins) {
-            if (w._bwmState !== 'tiled-left' && w._bwmState !== 'tiled-right') return false;
-        }
-        return true;
-    }
 
-    _canMergeInto(tileWin, side, targetWs, mon) {
-        const targetLayout = this._getLayout(targetWs, mon);
-        const other        = side === 'left' ? 'right' : 'left';
-        if (!targetLayout[other]) return false;
-        if (targetLayout[side])   return false;
-
-        const srcWs = tileWin.get_workspace();
-        if (!srcWs) return false;
-        if (!this._wsIsClean(srcWs, mon, tileWin))  return false;
-        if (!this._wsIsClean(targetWs, mon, null))   return false;
-
-        const wa       = tileWin.get_work_area_for_monitor(mon);
-        const tileW    = tileWin.get_frame_rect().width;
-        const partnerW = targetLayout[other].get_frame_rect().width;
-        if (Math.abs(tileW + partnerW - wa.width) > wa.width * MERGE_THRESHOLD) return false;
-
-        return true;
-    }
-
-    _displaceTile(occupant, side, mon) {
+    _displaceTile(occupant, side) {
         if (!isTracked(occupant)) return;
-
-        const manager   = global.workspace_manager;
-        const srcWs     = occupant.get_workspace();
-        if (!srcWs) return;
-        const srcWsIdx  = srcWs.index();
-        const nextWsIdx = srcWsIdx + 1;
-
-        if (nextWsIdx < manager.get_n_workspaces()) {
-            const nextWs = manager.get_workspace_by_index(nextWsIdx);
-            if (this._canMergeInto(occupant, side, nextWs, mon)) {
-                const occupantW = occupant.get_frame_rect().width;
-                const other     = side === 'left' ? 'right' : 'left';
-
-                occupant._bwmMoving = true;
-                occupant._bwmState  = `tiled-${side}`;
-                occupant.change_workspace_by_index(nextWsIdx, false);
-
-                LOG('displaceTile: merging', occupant.get_wm_class(), `into ws${nextWsIdx} side=${side}`);
-                this._defer(() => {
-                    delete occupant._bwmMoving;
-                    if (!isTracked(occupant)) return;
-                    const wa        = occupant.get_work_area_for_monitor(mon);
-                    const partnerW  = wa.width - occupantW;
-                    this._doTile(occupant, side, wa, occupantW);
-                    const layout    = this._getLayout(nextWs, mon);
-                    const partner   = layout[other];
-                    if (partner && isTracked(partner))
-                        this._doTile(partner, other, wa, partnerW);
-                });
-                return;
-            }
-        }
-
-        // No merge possible — give occupant its own new workspace, tiling on same side
-        LOG('displaceTile: canMerge=false, new ws for', occupant.get_wm_class(), `side=${side}`);
+        LOG('displaceTile: new ws for', occupant.get_wm_class(), `side=${side}`);
         this._moveToNewWorkspace(occupant, side);
-    }
-
-    _collapseIfPossible(ws, closedSide, mon) {
-        const manager = global.workspace_manager;
-        const wsIdx   = ws.index();
-        if (wsIdx < 0) return; // workspace no longer exists
-
-        const nextWsIdx = wsIdx + 1;
-        if (nextWsIdx >= manager.get_n_workspaces()) return;
-
-        const layout = this._getLayout(ws, mon);
-        if (layout[closedSide]) return; // slot filled again already
-
-        const nextWs     = manager.get_workspace_by_index(nextWsIdx);
-        const nextLayout = this._getLayout(nextWs, mon);
-        const other      = closedSide === 'left' ? 'right' : 'left';
-
-        const candidate = nextLayout[closedSide];
-        if (!candidate) return;
-        if (nextLayout[other]) return; // don't pull candidate away from its companion
-
-        if (!this._canMergeInto(candidate, closedSide, ws, mon)) return;
-
-        const candidateW = candidate.get_frame_rect().width;
-        candidate._bwmMoving = true;
-        candidate._bwmState  = `tiled-${closedSide}`;
-        candidate.change_workspace_by_index(wsIdx, false);
-
-        LOG('collapseIfPossible: pulling', candidate.get_wm_class(), `from ws${nextWsIdx} into ws${wsIdx}`);
-        this._defer(() => {
-            delete candidate._bwmMoving;
-            if (!isTracked(candidate)) return;
-            const wa      = candidate.get_work_area_for_monitor(mon);
-            const updated = this._getLayout(ws, mon);
-            const partner = updated[other];
-            if (partner && isTracked(partner)) {
-                const pw = partner.get_frame_rect().width;
-                this._doTile(candidate, closedSide, wa, wa.width - pw);
-                this._doTile(partner,   other,       wa, pw);
-            } else {
-                this._doTile(candidate, closedSide, wa, candidateW);
-            }
-        });
     }
 
     // ── Workspace management ─────────────────────────────────────────────────
@@ -1429,12 +1319,7 @@ export default class BorshevikWorkspaceManager extends Extension {
         this._ourWorkspaces.add(newWs);
         newWs.connect('window-removed', (_ws, win) => {
             if (win._bwmMoving) return;
-            const closedSide = win._bwmState === 'tiled-left'  ? 'left'
-                             : win._bwmState === 'tiled-right' ? 'right' : null;
-            const mon = win.get_monitor();
             this._defer(() => this._leaveIfEmpty(newWs));
-            if (closedSide !== null && mon >= 0)
-                this._defer(() => this._collapseIfPossible(newWs, closedSide, mon));
         });
 
         for (const win of wins) {
@@ -1520,12 +1405,7 @@ export default class BorshevikWorkspaceManager extends Extension {
         this._ourWorkspaces.add(newWs);
         newWs.connect('window-removed', (_ws, win) => {
             if (win._bwmMoving) return;
-            const closedSide = win._bwmState === 'tiled-left'  ? 'left'
-                             : win._bwmState === 'tiled-right' ? 'right' : null;
-            const mon = win.get_monitor();
             this._defer(() => this._leaveIfEmpty(newWs));
-            if (closedSide !== null && mon >= 0)
-                this._defer(() => this._collapseIfPossible(newWs, closedSide, mon));
         });
 
         win._bwmMoving = true;
