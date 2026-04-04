@@ -362,6 +362,12 @@ the caller knows the action is manual.
 
 ### Bugs
 
+- [ ] **UX-06: tall window with no free slot during batch should go to new workspace (right)** *(reported 2026-04-03)*
+  In `_restoreInitialState`, when `hr > 0.9, wr 0.2–0.8` but both tile slots are occupied
+  (`side = null`), the window stays floating on the current workspace. During Chrome session
+  restore (batch of many windows), this means a tile-like window ends up floating on a workspace
+  that already has two tiles. Expected: `_moveToNewWorkspace(win)` (dir=right) instead of floating.
+
 - [ ] **BUG-13: maximized window state corrupted on workspace index shift** *(reported 2026-03-26)*
   When GNOME adds/removes a workspace, all window indices shift → `workspace-changed` fires for
   ALL windows even though they didn't actually move. `_onWorkspaceChanged` resets state to

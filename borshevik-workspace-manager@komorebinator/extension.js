@@ -30,6 +30,7 @@ const DRAG_THRESHOLD  = 20;   // px cursor must travel before snap zones activat
 // win._bwmMoving        bool      — we initiated a workspace change (skip auto-tile)
 // win._bwmEvicting      bool      — already scheduled for eviction (dedup)
 // win._bwmJustMoved     bool      — user manually moved to this ws (skip coverage check once)
+// win._bwmOrigin        { ws: MetaWorkspace, side: string } | undefined  — where to return if displacing window frees its slot
 // win._bwmAppliedRules  Set<uuid> — UUIDs of window rules applied at map time
 // win._bwmForceNewWs    string    — rule id requesting window opens on a dedicated workspace
 
@@ -473,6 +474,11 @@ export default class BorshevikWorkspaceManager extends Extension {
         if (!isTracked(win)) return;
         LOG('unmanaged:', win.get_wm_class());
 
+        const freedSide = win._bwmState === 'tiled-left'  ? 'left'
+                        : win._bwmState === 'tiled-right' ? 'right' : null;
+        const freedWs  = win._bwmTiledWs ?? win.get_workspace();
+        const freedMon = win._bwmTiledMon ?? win.get_monitor();
+
         // Clear all extension state from the window
         delete win._bwmState;
         delete win._bwmFloatRect;
@@ -483,11 +489,17 @@ export default class BorshevikWorkspaceManager extends Extension {
         delete win._bwmMoving;
         delete win._bwmEvicting;
         delete win._bwmJustMoved;
+        delete win._bwmOrigin;
+        delete win._bwmTiledWs;
+        delete win._bwmTiledMon;
         delete win._bwmAppliedRules;
         delete win._bwmForceNewWs;
         delete win._bwmRuleGeom;
 
         this._pendingBatch?.delete(win);
+
+        if (freedSide && freedWs && freedMon >= 0)
+            this._defer(() => this._tryReturnOrigin(freedWs, freedSide, freedMon));
     }
 
     _leaveIfEmpty(ws) {
@@ -534,6 +546,13 @@ export default class BorshevikWorkspaceManager extends Extension {
         LOG('workspace-changed (user):', win.get_wm_class(), '→ ws', newWs.index());
         win.raise();
         win._bwmJustMoved = true;
+        const prevSide = win._bwmState === 'tiled-left'  ? 'left'
+                       : win._bwmState === 'tiled-right' ? 'right' : null;
+        const oldWs    = win._bwmTiledWs ?? null;
+        const prevMon  = win.get_monitor();
+        delete win._bwmOrigin; // user chose a new home — cancel auto-return
+        if (prevSide && oldWs && oldWs !== newWs && prevMon >= 0)
+            this._defer(() => this._tryReturnOrigin(oldWs, prevSide, prevMon));
         if (this._moveWhenMax)
             this._defer(() => this._tileIntoFreeSlot(win));
     }
@@ -738,7 +757,12 @@ export default class BorshevikWorkspaceManager extends Extension {
                             Math.round(wa.width * saved.wr), Math.round(wa.height * saved.hr));
                     }
                 }
+                const detachedSide = this._drag.tiledSide;
+                const ws           = win.get_workspace();
+                const mon          = this._drag.monitor;
                 this._drag.tiledSide = null;
+                if (ws && mon >= 0)
+                    this._defer(() => this._tryReturnOrigin(ws, detachedSide, mon));
             }
             if      (cx <= wa.x + SNAP_PX)              snap = 'left';
             else if (cx >= wa.x + wa.width - SNAP_PX)   snap = 'right';
@@ -832,10 +856,8 @@ export default class BorshevikWorkspaceManager extends Extension {
         const layout = this._getLayout(ws, mon);
         const other  = side === 'left' ? 'right' : 'left';
 
-        // Snapshot float rect before any state changes (only if currently floating).
-        // Geometry is NOT saved here — only _captureAndSaveFloatGeom (manual tile) does that.
-        if (win._bwmState === 'floating')
-            win._bwmFloatRect = this._toRect(win.get_frame_rect());
+        win._bwmTiledWs  = ws;  // remember workspace so _onWorkspaceChanged can find it
+        win._bwmTiledMon = mon; // remember monitor — get_monitor() returns -1 at unmanaged time
 
         LOG('tileWindow:', win.get_wm_class(), `→ ${side} state=${win._bwmState}`,
             `left=${layout.left?.get_wm_class() ?? '-'} right=${layout.right?.get_wm_class() ?? '-'}`);
@@ -1069,8 +1091,12 @@ export default class BorshevikWorkspaceManager extends Extension {
         const win = global.display.get_focus_window();
         if (!win || !isTracked(win)) return;
         if (win._bwmState === `tiled-${side}`) {
+            const ws  = win.get_workspace();
+            const mon = win.get_monitor();
             win._bwmState = 'floating';
             this._doFloat(win);
+            if (ws && mon >= 0)
+                this._defer(() => this._tryReturnOrigin(ws, side, mon));
         } else {
             this._captureAndSaveFloatGeom(win);
             const ws  = win.get_workspace();
@@ -1292,13 +1318,101 @@ export default class BorshevikWorkspaceManager extends Extension {
         return true;
     }
 
-    // ── Tile displacement & workspace collapsing ─────────────────────────────
+    // ── Tile displacement & return ───────────────────────────────────────────
 
+    // When a tile slot (ws, side, mon) is freed, check if any displaced window wants to return.
+    _tryReturnOrigin(ws, side, mon) { try {
+        LOG('tryReturnOrigin: called ws=', ws?.index(), 'side=', side);
+        if (!ws || ws.index() < 0) { LOG('tryReturnOrigin: ws invalid'); return; }
+        const layout = this._getLayout(ws, mon);
+        if (layout[side]) { LOG('tryReturnOrigin: slot taken by', layout[side].get_wm_class()); return; }
+
+        // Find a window displaced from this exact slot
+        const candidate = global.get_window_actors()
+            .map(a => a.meta_window)
+            .find(w => w && isTracked(w) &&
+                w._bwmOrigin?.ws === ws &&
+                w._bwmOrigin?.side === side &&
+                w.get_monitor() === mon);
+        if (!candidate) { LOG('tryReturnOrigin: no candidate for ws=', ws.index(), 'side=', side); return; }
+
+        // Only return if the candidate is alone on its side (no non-displaced companion)
+        const candWs     = candidate.get_workspace();
+        const candLayout = candWs ? this._getLayout(candWs, mon) : { left: null, right: null };
+        const other      = side === 'left' ? 'right' : 'left';
+        const companion  = candLayout[other];
+        if (companion && !companion._bwmOrigin) { LOG('tryReturnOrigin: blocked by companion', companion.get_wm_class()); return; }
+
+        LOG('tryReturnOrigin: returning', candidate.get_wm_class(), `to ws${ws.index()} side=${side}`);
+        const origin = candidate._bwmOrigin;
+        delete candidate._bwmOrigin;
+        candidate._bwmMoving = true;
+        candidate._bwmState  = `tiled-${side}`;
+        candidate.change_workspace(ws);
+        ws.activate(global.get_current_time());
+        this._defer(() => {
+            delete candidate._bwmMoving;
+            if (!isTracked(candidate)) return;
+            const wa = candidate.get_work_area_for_monitor(mon);
+            this._doTile(candidate, side, wa, null);
+            // Recursively try to return other displaced windows that were with this one
+            this._tryReturnOrigin(origin.ws, other, mon);
+        });
+    } catch (e) { LOG('tryReturnOrigin: EXCEPTION', e.message, e.stack); } }
 
     _displaceTile(occupant, side) {
         if (!isTracked(occupant)) return;
-        LOG('displaceTile: new ws for', occupant.get_wm_class(), `side=${side}`);
-        this._moveToNewWorkspace(occupant, side);
+        const srcWs  = occupant.get_workspace();
+        const mon    = occupant.get_monitor();
+        const origin = { ws: srcWs, side };
+
+        // Look for an existing workspace to the left that can absorb the displaced tile.
+        // Eligible: the target slot is free, and every tile there was also displaced from srcWs.
+        const manager = global.workspace_manager;
+        const srcIdx  = srcWs?.index() ?? -1;
+        let targetWs  = null;
+        for (let i = srcIdx - 1; i >= 0; i--) {
+            const ws     = manager.get_workspace_by_index(i);
+            const layout = this._getLayout(ws, mon);
+            // Prefer same side, accept opposite if same is taken
+            const preferredFree = !layout[side];
+            const otherFree     = !layout[side === 'left' ? 'right' : 'left'];
+            const slotFree      = preferredFree || otherFree;
+            if (!slotFree) continue;
+            // Reject if workspace has a maximized/fullscreen blocker
+            const hasBlocker = ws.list_windows().some(w =>
+                w.get_monitor() === mon && isTracked(w) &&
+                (w.fullscreen || w._bwmState === 'maximized'));
+            if (hasBlocker) continue;
+            // All tiles on this ws must be displaced from srcWs (no user-placed tiles)
+            const wins = ws.list_windows().filter(w =>
+                w.get_monitor() === mon && isTracked(w) &&
+                (w._bwmState === 'tiled-left' || w._bwmState === 'tiled-right'));
+            const allDisplaced = wins.length > 0 && wins.every(w => w._bwmOrigin?.ws === srcWs);
+            if (!allDisplaced) continue;
+            targetWs = ws;
+            break;
+        }
+
+        if (targetWs) {
+            const layout    = this._getLayout(targetWs, mon);
+            const landSide  = !layout[side] ? side : (side === 'left' ? 'right' : 'left');
+            LOG('displaceTile: merging', occupant.get_wm_class(), `into existing ws side=${landSide}`);
+            occupant._bwmOrigin  = origin;
+            occupant._bwmMoving  = true;
+            occupant._bwmState   = `tiled-${landSide}`;
+            occupant.change_workspace(targetWs);
+            this._defer(() => {
+                delete occupant._bwmMoving;
+                if (!isTracked(occupant)) return;
+                const wa = occupant.get_work_area_for_monitor(mon);
+                this._doTile(occupant, landSide, wa, null);
+            });
+        } else {
+            LOG('displaceTile: new ws for', occupant.get_wm_class(), `side=${side}`);
+            occupant._bwmOrigin = origin;
+            this._moveToNewWorkspace(occupant, side, 'left');
+        }
     }
 
     // ── Workspace management ─────────────────────────────────────────────────
