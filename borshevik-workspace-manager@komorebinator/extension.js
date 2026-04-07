@@ -28,9 +28,8 @@ const DRAG_THRESHOLD  = 20;   // px cursor must travel before snap zones activat
 // win._bwmFirstFrame bool — has first buffer commit fired
 // win._bwmHandled    bool — passed through handleNewWindow (batch dedup)
 // win._bwmMoving        bool      — we initiated a workspace change (skip auto-tile)
-// win._bwmEvicting      bool      — already scheduled for eviction (dedup)
 // win._bwmJustMoved     bool      — user manually moved to this ws (skip coverage check once)
-// win._bwmOrigin        { ws: MetaWorkspace, side: string } | undefined  — where to return if displacing window frees its slot
+// win._bwmOrigin        { ws: MetaWorkspace, side?: string } | undefined  — original workspace (and slot) this window was moved from
 // win._bwmAppliedRules  Set<uuid> — UUIDs of window rules applied at map time
 // win._bwmForceNewWs    string    — rule id requesting window opens on a dedicated workspace
 
@@ -373,10 +372,11 @@ export default class BorshevikWorkspaceManager extends Extension {
 
     _getLayout(workspace, monitor) {
         const wins = workspace.list_windows()
-            .filter(w => w.get_monitor() === monitor);
+            .filter(w => w.get_monitor() === monitor && isTracked(w));
+        const blocker = wins.find(w => w.fullscreen || w._bwmState === 'maximized') ?? null;
         return {
-            left:  wins.find(w => w._bwmState === 'tiled-left')  ?? null,
-            right: wins.find(w => w._bwmState === 'tiled-right') ?? null,
+            left:  wins.find(w => w._bwmState === 'tiled-left')  ?? blocker,
+            right: wins.find(w => w._bwmState === 'tiled-right') ?? blocker,
         };
     }
 
@@ -487,7 +487,6 @@ export default class BorshevikWorkspaceManager extends Extension {
         delete win._bwmFirstFrame;
         delete win._bwmHandled;
         delete win._bwmMoving;
-        delete win._bwmEvicting;
         delete win._bwmJustMoved;
         delete win._bwmOrigin;
         delete win._bwmTiledWs;
@@ -578,8 +577,10 @@ export default class BorshevikWorkspaceManager extends Extension {
             if (this._moveWhenMax) {
                 const ws  = win.get_workspace();
                 const mon = win.get_monitor();
-                if (ws && this._isPrimary(mon) && this._hasOtherWindows(ws, mon, win))
+                if (ws && this._isPrimary(mon) && this._hasOtherWindows(ws, mon, win)) {
+                    if (!win._bwmOrigin) win._bwmOrigin = { ws };
                     this._defer(() => this._moveToNewWorkspace(win));
+                }
             }
         } else {
             this._onUnmaximized(win);
@@ -600,32 +601,38 @@ export default class BorshevikWorkspaceManager extends Extension {
 
         LOG('← unmaximized:', win.get_wm_class(), 'restoring', prev);
 
-        // On an auto-created workspace: try to return to the previous workspace.
-        if (this._moveWhenMax) {
+        // If window has an origin workspace, try to return there.
+        const originWs = win._bwmOrigin?.ws ?? null;
+        delete win._bwmOrigin;
+        if (originWs) {
             const currentWs = win.get_workspace();
-            if (currentWs && this._ourWorkspaces.has(currentWs)) {
-                const wsIdx   = currentWs.index();
-                const prevWs  = wsIdx > 0
-                    ? global.workspace_manager.get_workspace_by_index(wsIdx - 1) : null;
-                if (prevWs) {
-                    const mon        = win.get_monitor();
-                    const prevLayout = this._getLayout(prevWs, mon);
-                    let targetSide   = null;
-                    if      (prev === 'tiled-left'  && !prevLayout.left)  targetSide = 'left';
-                    else if (prev === 'tiled-right' && !prevLayout.right) targetSide = 'right';
+            const mon       = win.get_monitor();
+            const hasFullscreen = originWs.list_windows().some(w =>
+                w.get_monitor() === mon && w.fullscreen);
+            if (!hasFullscreen) {
+                const originLayout = this._getLayout(originWs, mon);
+                let targetSide = null;
+                if      (prev === 'tiled-left'  && !originLayout.left)  targetSide = 'left';
+                else if (prev === 'tiled-right' && !originLayout.right) targetSide = 'right';
 
-                    if (targetSide) {
-                        LOG('← unmaximized: returning to ws', wsIdx - 1, 'side', targetSide);
-                        win._bwmMoving = true;
-                        win._bwmState  = `tiled-${targetSide}`; // set before workspace move
-                        win.change_workspace_by_index(wsIdx - 1, false);
-                        prevWs.activate(global.get_current_time());
-                        this._defer(() => {
-                            delete win._bwmMoving;
-                            if (isTracked(win)) this._tileWindow(win, targetSide);
-                        });
-                        return;
-                    }
+                if (targetSide) {
+                    LOG('← unmaximized: returning to ws', originWs.index(), 'side', targetSide);
+                    win._bwmMoving = true;
+                    win._bwmState  = `tiled-${targetSide}`;
+                    win.change_workspace(originWs);
+                    originWs.activate(global.get_current_time());
+                    this._defer(() => {
+                        delete win._bwmMoving;
+                        if (isTracked(win)) this._tileWindow(win, targetSide);
+                    });
+                    return;
+                } else if (prev === 'floating' && currentWs !== originWs) {
+                    LOG('← unmaximized: returning float to ws', originWs.index());
+                    win._bwmMoving = true;
+                    win.change_workspace(originWs);
+                    originWs.activate(global.get_current_time());
+                    this._defer(() => { delete win._bwmMoving; });
+                    return;
                 }
             }
         }
@@ -705,7 +712,7 @@ export default class BorshevikWorkspaceManager extends Extension {
         if (!ws) return;
         const layout  = this._getLayout(ws, win.get_monitor());
         const partner = layout.left === win ? layout.right : layout.left;
-        if (!partner) return;
+        if (!partner?._bwmState?.startsWith('tiled')) return;
         LOG('resize-begin:', win.get_wm_class(), '| partner:', partner.get_wm_class());
         this._resize = { win, partner };
     }
@@ -763,6 +770,12 @@ export default class BorshevikWorkspaceManager extends Extension {
                 this._drag.tiledSide = null;
                 if (ws && mon >= 0)
                     this._defer(() => this._tryReturnOrigin(ws, detachedSide, mon));
+                this._floatReturnToOrigin(win, ws, mon);
+            } else if (!this._drag.originReturned) {
+                this._drag.originReturned = true;
+                const ws  = win.get_workspace();
+                const mon = this._drag.monitor;
+                this._floatReturnToOrigin(win, ws, mon);
             }
             if      (cx <= wa.x + SNAP_PX)              snap = 'left';
             else if (cx >= wa.x + wa.width - SNAP_PX)   snap = 'right';
@@ -809,9 +822,6 @@ export default class BorshevikWorkspaceManager extends Extension {
             this._doMaximize(win);
         } else {
             this._captureAndSaveFloatGeom(win);
-            const ws  = win.get_workspace();
-            const mon = this._drag.monitor;
-            this._evictBlockerIfPresent(ws, mon, win);
             this._tileWindow(win, this._snapSide);
         }
     }
@@ -866,7 +876,14 @@ export default class BorshevikWorkspaceManager extends Extension {
 
         if (occupant) {
             if (layout[other] && layout[other] !== win) {
-                // Both sides occupied — displace the occupant of our target side.
+                const occupantIsBlocker = occupant.fullscreen || occupant._bwmState === 'maximized';
+                if (occupantIsBlocker) {
+                    // Blocker occupies both slots — move win to new ws instead of displacing blocker.
+                    if (!win._bwmOrigin) win._bwmOrigin = { ws };
+                    this._moveToNewWorkspace(win, side, 'right');
+                    return;
+                }
+                // Both sides occupied by tiles — displace the occupant of our target side.
                 // After _displaceTile the occupant has moved workspace synchronously.
                 // Re-read layout to get updated partner width for overrideW.
                 this._displaceTile(occupant, side, mon);
@@ -969,6 +986,14 @@ export default class BorshevikWorkspaceManager extends Extension {
         win._bwmState  = 'maximized';
         win.maximize();
         LOG('maximize:', win.get_wm_class(), 'preMaxState:', win._bwmPreMax);
+        if (this._moveWhenMax) {
+            const ws  = win.get_workspace();
+            const mon = win.get_monitor();
+            if (ws && this._isPrimary(mon) && this._hasOtherWindows(ws, mon, win)) {
+                if (!win._bwmOrigin) win._bwmOrigin = { ws };
+                this._defer(() => this._moveToNewWorkspace(win));
+            }
+        }
     }
 
     _doFloat(win) {
@@ -1048,32 +1073,12 @@ export default class BorshevikWorkspaceManager extends Extension {
             `existing=${hasExistingOther} slots=${slotsUsed} blocking=${winIsBlocking}`);
 
         if (winIsBlocking && (hasExistingOther || slotsUsed >= 1) && this._isPrimary(mon)) {
+            if (!win._bwmOrigin) win._bwmOrigin = { ws };
             this._moveToNewWorkspace(win);
             return;
         }
 
         this._restoreInitialState(win);
-    }
-
-    /** If there is a maximized/fullscreen blocker on ws:mon, schedule its eviction to the left. */
-    _evictBlockerIfPresent(ws, mon, excludeWin = null) {
-        if (!this._moveWhenMax || !ws) return;
-        if (!this._isPrimary(mon)) return;
-        for (const w of ws.list_windows()) {
-            if (w === excludeWin) continue;
-            if (!isTracked(w)) continue;
-            if (w.get_monitor() !== mon) continue;
-            if (w._bwmMoving || w._bwmEvicting) continue;
-            if (w.fullscreen || w._bwmState === 'maximized') {
-                LOG('evictBlocker:', w.get_wm_class(), '← left from ws', ws.index());
-                w._bwmEvicting = true;
-                this._defer(() => {
-                    delete w._bwmEvicting;
-                    if (isTracked(w)) this._moveToNewWorkspace(w, null, 'left');
-                });
-                break;
-            }
-        }
     }
 
     /** Returns true if there are any other tracked windows on ws:monitor (excluding excludeWin). */
@@ -1093,15 +1098,15 @@ export default class BorshevikWorkspaceManager extends Extension {
         if (win._bwmState === `tiled-${side}`) {
             const ws  = win.get_workspace();
             const mon = win.get_monitor();
+            LOG('untile:', win.get_wm_class(), 'originWs=', win._bwmOrigin?.ws?.index() ?? 'none',
+                'alone=', !this._hasOtherWindows(ws, mon, win));
             win._bwmState = 'floating';
             this._doFloat(win);
             if (ws && mon >= 0)
                 this._defer(() => this._tryReturnOrigin(ws, side, mon));
+            this._floatReturnToOrigin(win, ws, mon);
         } else {
             this._captureAndSaveFloatGeom(win);
-            const ws  = win.get_workspace();
-            const mon = win.get_monitor();
-            this._evictBlockerIfPresent(ws, mon, win);
             this._tileWindow(win, side);
         }
     }
@@ -1116,6 +1121,7 @@ export default class BorshevikWorkspaceManager extends Extension {
         LOG('restoreInitialState:', win.get_wm_class(), `wr=${wr.toFixed(2)} hr=${hr.toFixed(2)}`);
 
         if (wr > 0.9 && hr > 0.9) {
+            win._bwmOrigin = { ws: win.get_workspace() };
             this._doMaximize(win);
         } else if (hr > 0.9 && wr >= 0.2 && wr <= 0.8) {
             const customW   = Math.min(rect.width, Math.floor(wa.width * 0.8));
@@ -1125,10 +1131,12 @@ export default class BorshevikWorkspaceManager extends Extension {
             const layout    = ws ? this._getLayout(ws, mon) : { left: null, right: null };
             const other     = preferred === 'left' ? 'right' : 'left';
             const side      = !layout[preferred] ? preferred : !layout[other] ? other : null;
-            if (side !== null) {
-                this._evictBlockerIfPresent(ws, mon);
+            if (side) {
                 const otherSide = side === 'left' ? 'right' : 'left';
                 this._tileWindow(win, side, layout[otherSide] ? null : customW);
+            } else {
+                win._bwmOrigin = { ws };
+                this._moveToNewWorkspace(win);
             }
         }
         // otherwise leave floating
@@ -1320,6 +1328,23 @@ export default class BorshevikWorkspaceManager extends Extension {
 
     // ── Tile displacement & return ───────────────────────────────────────────
 
+    // If win has a _bwmOrigin ws, is alone on (ws, mon), and origin has no fullscreen —
+    // move win back to its origin workspace. Consumes _bwmOrigin.
+    _floatReturnToOrigin(win, ws, mon) {
+        const originWs = win._bwmOrigin?.ws ?? null;
+        delete win._bwmOrigin;
+        if (!originWs || originWs === ws) return;
+        if (this._hasOtherWindows(ws, mon, win)) return;
+        const hasFullscreen = originWs.list_windows().some(w =>
+            w.get_monitor() === mon && w.fullscreen);
+        if (hasFullscreen) return;
+        LOG('floatReturnToOrigin:', win.get_wm_class(), '→ ws', originWs.index());
+        win._bwmMoving = true;
+        win.change_workspace(originWs);
+        originWs.activate(global.get_current_time());
+        this._defer(() => { delete win._bwmMoving; });
+    }
+
     // When a tile slot (ws, side, mon) is freed, check if any displaced window wants to return.
     _tryReturnOrigin(ws, side, mon) { try {
         LOG('tryReturnOrigin: called ws=', ws?.index(), 'side=', side);
@@ -1379,11 +1404,6 @@ export default class BorshevikWorkspaceManager extends Extension {
             const otherFree     = !layout[side === 'left' ? 'right' : 'left'];
             const slotFree      = preferredFree || otherFree;
             if (!slotFree) continue;
-            // Reject if workspace has a maximized/fullscreen blocker
-            const hasBlocker = ws.list_windows().some(w =>
-                w.get_monitor() === mon && isTracked(w) &&
-                (w.fullscreen || w._bwmState === 'maximized'));
-            if (hasBlocker) continue;
             // All tiles on this ws must be displaced from srcWs (no user-placed tiles)
             const wins = ws.list_windows().filter(w =>
                 w.get_monitor() === mon && isTracked(w) &&
@@ -1509,6 +1529,29 @@ export default class BorshevikWorkspaceManager extends Extension {
         const oldWs      = win.get_workspace();
         const monitor    = win.get_monitor();
 
+        // If we need to tile on arrival, try existing workspaces first (current, then next).
+        if (tileOnArrive && direction === 'right') {
+            for (const idx of [currentIdx, currentIdx + 1]) {
+                if (idx >= manager.get_n_workspaces()) break;
+                const ws     = manager.get_workspace_by_index(idx);
+                const layout = this._getLayout(ws, monitor);
+                const freeSide = !layout[tileOnArrive] ? tileOnArrive
+                               : !layout[tileOnArrive === 'left' ? 'right' : 'left'] ? (tileOnArrive === 'left' ? 'right' : 'left')
+                               : null;
+                if (freeSide === null) continue;
+                LOG('moveToNewWorkspace: reusing ws', idx, 'side=', freeSide, 'for', win.get_wm_class());
+                win._bwmMoving = true;
+                win.change_workspace(ws);
+                ws.activate(global.get_current_time());
+                this._defer(() => {
+                    delete win._bwmMoving;
+                    if (isTracked(win)) this._tileWindow(win, freeSide);
+                    this._finishMove(win);
+                });
+                return;
+            }
+        }
+
         manager.append_new_workspace(false, global.get_current_time());
         const newIdx = direction === 'left' ? currentIdx : currentIdx + 1;
         manager.reorder_workspace(
@@ -1525,7 +1568,7 @@ export default class BorshevikWorkspaceManager extends Extension {
         win._bwmMoving = true;
         win.change_workspace_by_index(newIdx, false);
 
-        if (!tileOnArrive && direction !== 'left') {
+        if (direction !== 'left') {
             const fullscreen = oldWs?.list_windows()
                 .some(w => w.fullscreen && w.get_monitor() === monitor && w !== win);
             if (!fullscreen)
