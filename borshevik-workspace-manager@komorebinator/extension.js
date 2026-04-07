@@ -349,8 +349,7 @@ export default class BorshevikWorkspaceManager extends Extension {
         const wa = win.get_work_area_current_monitor();
         const fr = win.get_frame_rect();
         win._bwmFloatRect = this._toRect(fr);
-        const geom = { xr: (fr.x - wa.x) / wa.width,  yr: (fr.y - wa.y) / wa.height,
-                       wr:  fr.width      / wa.width,  hr:  fr.height     / wa.height };
+        const geom = { wr: fr.width / wa.width, hr: fr.height / wa.height };
         try {
             const map = JSON.parse(this._settings.get_string('float-sizes'));
             map[win.get_wm_class()] = geom;
@@ -409,12 +408,16 @@ export default class BorshevikWorkspaceManager extends Extension {
         if (!win.fullscreen) {
             const wa0   = win.get_work_area_current_monitor();
             const saved = this._loadFloatGeom(win.get_wm_class());
-            win._bwmFloatRect = saved
-                ? { x: Math.round(wa0.x + wa0.width  * saved.xr),
-                    y: Math.round(wa0.y + wa0.height * saved.yr),
-                    width:  Math.round(wa0.width  * saved.wr),
-                    height: Math.round(wa0.height * saved.hr) }
-                : this._toRect(r0);
+            if (saved) {
+                const w = Math.round(wa0.width  * saved.wr);
+                const h = Math.round(wa0.height * saved.hr);
+                win._bwmFloatRect = {
+                    x: wa0.x + Math.round((wa0.width  - w) / 2),
+                    y: wa0.y + Math.round((wa0.height - h) / 2),
+                    width: w, height: h };
+            } else {
+                win._bwmFloatRect = this._toRect(r0);
+            }
         }
 
         // Hook first-frame now so we catch it even for fast-starting apps
@@ -628,10 +631,14 @@ export default class BorshevikWorkspaceManager extends Extension {
                     return;
                 } else if (prev === 'floating' && currentWs !== originWs) {
                     LOG('← unmaximized: returning float to ws', originWs.index());
+                    win._bwmState  = 'floating';
                     win._bwmMoving = true;
                     win.change_workspace(originWs);
                     originWs.activate(global.get_current_time());
-                    this._defer(() => { delete win._bwmMoving; });
+                    this._defer(() => {
+                        delete win._bwmMoving;
+                        if (isTracked(win)) this._doFloat(win);
+                    });
                     return;
                 }
             }
