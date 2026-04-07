@@ -226,12 +226,12 @@ export default class BorshevikWorkspaceManager extends Extension {
 
             const isActive = i === activeI;
             const btn = new St.Button({
-                style_class: isActive ? 'bwm-ws bwm-ws-active' : 'bwm-ws',
+                style_class: 'bwm-ws',
                 reactive: true,
-                y_align: Clutter.ActorAlign.CENTER,
+                y_align: Clutter.ActorAlign.FILL,
                 opacity: isActive ? 255 : 204,
             });
-            btn.set_y_expand(false);
+            btn.set_y_expand(true);
             btn.connect('clicked', () => ws.activate(global.get_current_time()));
 
             const row = new St.BoxLayout({ style_class: 'bwm-ws-row' });
@@ -251,7 +251,11 @@ export default class BorshevikWorkspaceManager extends Extension {
                 }
             }
 
-            btn.set_child(row);
+            const bg = new St.Bin({
+                style_class: isActive ? 'bwm-ws-bg bwm-ws-active' : 'bwm-ws-bg',
+                child: row,
+            });
+            btn.set_child(bg);
             this._indicator.add_child(btn);
         }
     }

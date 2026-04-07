@@ -13,13 +13,18 @@
 }
 
 .bwm-ws {
-    padding: 0 6px;
+    padding: 0 2px;
+}
+
+.bwm-ws-bg {
+    height: 22px;
+    padding: 0 4px;
     border-radius: 9999px;
     transition-duration: 150ms;
 }
 
-.bwm-ws:hover {
-    background-color: rgba(255, 255, 255, 0.2);
+.bwm-ws:hover .bwm-ws-bg {
+    background-color: rgba(255, 255, 255, 0.1);
 }
 
 .bwm-ws-active {
@@ -27,7 +32,7 @@
 }
 
 .bwm-ws-active:hover {
-    background-color: rgba(255, 255, 255, 0.25);
+    background-color: rgba(255, 255, 255, 0.35);
 }
 
 .bwm-ws-row {
@@ -41,7 +46,7 @@
 }
 
 .bwm-app-icon {
-    padding: 0 1px;
+    padding: 0;
 }
 
 .bwm-ws-plus {
