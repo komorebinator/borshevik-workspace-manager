@@ -18,6 +18,7 @@
 
 .bwm-ws-bg {
     height: 22px;
+    min-width: 28px;
     padding: 0 4px;
     border-radius: 9999px;
     transition-duration: 150ms;
@@ -33,6 +34,11 @@
 
 .bwm-ws-active:hover {
     background-color: rgba(255, 255, 255, 0.35);
+}
+
+.bwm-ws-drag-over {
+    background-color: rgba(255, 255, 255, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.5);
 }
 
 .bwm-ws-row {

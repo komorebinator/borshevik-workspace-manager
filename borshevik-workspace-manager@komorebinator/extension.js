@@ -118,6 +118,7 @@ export default class BorshevikWorkspaceManager extends Extension {
             // Indicator signals
             [global.workspace_manager, global.workspace_manager.connect('active-workspace-changed', () => this._scheduleIndicatorUpdate())],
             [global.workspace_manager, global.workspace_manager.connect('workspace-added',          () => this._scheduleIndicatorUpdate())],
+            [global.workspace_manager, global.workspace_manager.connect('workspaces-reordered',     () => this._scheduleIndicatorUpdate())],
             [Shell.WindowTracker.get_default(), Shell.WindowTracker.get_default().connect('tracked-windows-changed', () => this._scheduleIndicatorUpdate())],
         ];
 
@@ -128,6 +129,7 @@ export default class BorshevikWorkspaceManager extends Extension {
         Main.panel._leftBox.insert_child_at_index(this._indicator, 0);
 
         this._scheduleIndicatorUpdate();
+        this._adoptExistingWindows();
     }
 
     disable() {
@@ -256,8 +258,91 @@ export default class BorshevikWorkspaceManager extends Extension {
                 child: row,
             });
             btn.set_child(bg);
+
+            // ── Drag-to-reorder ───────────────────────────────────────────────
+            btn._bwmWs = ws;
+            btn._bwmBg = bg;
+
+            btn.connect('button-press-event', (_actor, event) => {
+                if (event.get_button() !== 1) return Clutter.EVENT_PROPAGATE;
+                const [startX, startY] = event.get_coords();
+                let activeDrag = false;
+                let clone = null;
+
+                const captureId = global.stage.connect('captured-event', (_stage, ev) => {
+                    const type = ev.type();
+
+                    if (type === Clutter.EventType.MOTION) {
+                        const [cx, cy] = ev.get_coords();
+                        if (!activeDrag) {
+                            if (Math.hypot(cx - startX, cy - startY) < 6)
+                                return Clutter.EVENT_PROPAGATE;
+                            activeDrag = true;
+                            const [bx, by] = bg.get_transformed_position();
+                            clone = new Clutter.Clone({ source: bg });
+                            clone.set_position(bx, by);
+                            Main.layoutManager.uiGroup.add_child(clone);
+                            bg.opacity = 80;
+                        }
+                        clone.set_x(cx - clone.width / 2);
+                        this._updateWsDragTarget(cx, ws);
+                        return Clutter.EVENT_PROPAGATE;
+                    }
+
+                    if (type === Clutter.EventType.BUTTON_RELEASE) {
+                        global.stage.disconnect(captureId);
+                        if (!activeDrag) return Clutter.EVENT_PROPAGATE;
+                        clone.destroy();
+                        bg.opacity = 255;
+                        this._commitWsDrop(ws, isLast);
+                        return Clutter.EVENT_STOP;
+                    }
+
+                    if (type === Clutter.EventType.KEY_PRESS &&
+                        ev.get_key_symbol() === Clutter.KEY_Escape) {
+                        global.stage.disconnect(captureId);
+                        if (activeDrag) {
+                            clone.destroy();
+                            bg.opacity = 255;
+                            this._wsDragTarget?._bwmBg.remove_style_class_name('bwm-ws-drag-over');
+                            this._wsDragTarget = null;
+                        }
+                        return Clutter.EVENT_STOP;
+                    }
+
+                    return Clutter.EVENT_PROPAGATE;
+                });
+
+                return Clutter.EVENT_PROPAGATE;
+            });
+            // ─────────────────────────────────────────────────────────────────
+
             this._indicator.add_child(btn);
         }
+    }
+
+    _updateWsDragTarget(cx, srcWs) {
+        let found = null;
+        for (const child of this._indicator.get_children()) {
+            if (!child._bwmWs || child._bwmWs === srcWs) continue;
+            const [ax] = child.get_transformed_position();
+            if (cx >= ax && cx < ax + child.width) { found = child; break; }
+        }
+        if (this._wsDragTarget !== found) {
+            this._wsDragTarget?._bwmBg.remove_style_class_name('bwm-ws-drag-over');
+            this._wsDragTarget = found;
+            found?._bwmBg.add_style_class_name('bwm-ws-drag-over');
+        }
+    }
+
+    _commitWsDrop(srcWs, activate = false) {
+        const target = this._wsDragTarget;
+        this._wsDragTarget?._bwmBg.remove_style_class_name('bwm-ws-drag-over');
+        this._wsDragTarget = null;
+        if (!target) return;
+        global.workspace_manager.reorder_workspace(srcWs, target._bwmWs.index());
+        if (activate)
+            srcWs.activate(global.get_current_time());
     }
 
     // ── Window rules ─────────────────────────────────────────────────────────
@@ -332,6 +417,28 @@ export default class BorshevikWorkspaceManager extends Extension {
 
     _isPrimary(mon) {
         return mon === Main.layoutManager.primaryIndex;
+    }
+
+    // After shell restart, some windows (e.g. Chrome web apps) reconnect to the
+    // compositor without firing the `map` signal, so they're never processed by
+    // handleNewWindow and remain untracked. This causes hasExisting to return false
+    // for new windows opening on the same workspace. Adopt them on enable() so
+    // they count as existing occupants without moving them.
+    _adoptExistingWindows() {
+        const wm = global.workspace_manager;
+        for (let i = 0; i < wm.get_n_workspaces(); i++) {
+            for (const win of wm.get_workspace_by_index(i).list_windows()) {
+                if (!this._isRelevant(win) || isTracked(win)) continue;
+                if (win.get_maximized() === Meta.MaximizeFlags.BOTH) {
+                    win._bwmState  = 'maximized';
+                    win._bwmPreMax = 'floating';
+                } else {
+                    win._bwmState = 'floating';
+                    win._bwmFloatRect = this._toRect(win.get_frame_rect());
+                }
+                LOG('adopt:', win.get_wm_class(), '→', win._bwmState);
+            }
+        }
     }
 
     _isRelevant(win) {
