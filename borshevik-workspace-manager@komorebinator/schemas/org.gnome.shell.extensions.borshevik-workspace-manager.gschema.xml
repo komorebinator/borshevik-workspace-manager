@@ -1,11 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <schemalist>
   <schema id="org.gnome.shell.extensions.borshevik-workspace-manager" path="/org/gnome/shell/extensions/borshevik-workspace-manager/">
-    <key name="move-window-when-maximized" type="b">
-      <default>true</default>
-      <summary>Move window when maximized</summary>
-      <description>When enabled, maximized and fullscreen windows are moved to an empty workspace.</description>
-    </key>
     <key name="debug-logging" type="b">
       <default>false</default>
       <summary>Debug logging</summary>

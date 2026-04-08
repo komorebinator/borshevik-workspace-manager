@@ -59,8 +59,6 @@ export default class BorshevikWorkspaceManager extends Extension {
                 ? (...a) => console.log('[BWM]', ...a) : () => {};
         };
         updateLog();
-        this._moveWhenMax = this._settings.get_boolean('move-window-when-maximized');
-
         // Debounce timer for restacked signal (fires very frequently)
         this._restackedTimer = null;
 
@@ -111,9 +109,6 @@ export default class BorshevikWorkspaceManager extends Extension {
             [global.display,           global.display.connect('grab-op-begin', (_, w, op) => this._onGrabBegin(w, op))],
             [global.display,           global.display.connect('grab-op-end',   (_, w, op) => this._onGrabEnd(w, op))],
             [global.display,           global.display.connect('restacked', () => this._onRestacked())],
-            [this._settings,           this._settings.connect('changed::move-window-when-maximized', () => {
-                this._moveWhenMax = this._settings.get_boolean('move-window-when-maximized');
-            })],
             [this._settings,           this._settings.connect('changed::debug-logging', updateLog)],
             // Indicator signals
             [global.workspace_manager, global.workspace_manager.connect('active-workspace-changed', () => this._scheduleIndicatorUpdate())],
@@ -558,7 +553,6 @@ export default class BorshevikWorkspaceManager extends Extension {
         win.connect('notify::maximized-vertically',   () => this._onMaximizeChange(win));
         win.connect('notify::fullscreen',             () => this._onMaximizeChange(win));
 
-        if (!this._moveWhenMax) return;
         this._pendingBatch.add(win);
         this._scheduleBatch();
     }
@@ -666,8 +660,7 @@ export default class BorshevikWorkspaceManager extends Extension {
         delete win._bwmOrigin; // user chose a new home — cancel auto-return
         if (prevSide && oldWs && oldWs !== newWs && prevMon >= 0)
             this._defer(() => this._tryReturnOrigin(oldWs, prevSide, prevMon));
-        if (this._moveWhenMax)
-            this._defer(() => this._tileIntoFreeSlot(win));
+        this._defer(() => this._tileIntoFreeSlot(win));
     }
 
     _onMaximizeChange(win) {
@@ -688,13 +681,11 @@ export default class BorshevikWorkspaceManager extends Extension {
             win._bwmState   = 'maximized'; // must be set BEFORE any async ops to suppress re-entry
             LOG('→ maximized:', win.get_wm_class(), 'from', win._bwmPreMax);
 
-            if (this._moveWhenMax) {
-                const ws  = win.get_workspace();
-                const mon = win.get_monitor();
-                if (ws && this._isPrimary(mon) && this._hasOtherWindows(ws, mon, win)) {
-                    if (!win._bwmOrigin) win._bwmOrigin = { ws };
-                    this._defer(() => this._moveToNewWorkspace(win));
-                }
+            const ws  = win.get_workspace();
+            const mon = win.get_monitor();
+            if (ws && this._isPrimary(mon) && this._hasOtherWindows(ws, mon, win)) {
+                if (!win._bwmOrigin) win._bwmOrigin = { ws };
+                this._defer(() => this._moveToNewWorkspace(win));
             }
         } else {
             this._onUnmaximized(win);
@@ -1104,7 +1095,7 @@ export default class BorshevikWorkspaceManager extends Extension {
         win._bwmState  = 'maximized';
         win.maximize();
         LOG('maximize:', win.get_wm_class(), 'preMaxState:', win._bwmPreMax);
-        if (this._moveWhenMax) {
+        {
             const ws  = win.get_workspace();
             const mon = win.get_monitor();
             if (ws && this._isPrimary(mon) && this._hasOtherWindows(ws, mon, win)) {
@@ -1263,7 +1254,6 @@ export default class BorshevikWorkspaceManager extends Extension {
     // ── Covered-floater relocation ───────────────────────────────────────────
 
     _onRestacked() {
-        if (!this._moveWhenMax) return;
         if (this._restackedTimer) return;
         this._restackedTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 80, () => {
             this._restackedTimer = null;
@@ -1299,7 +1289,6 @@ export default class BorshevikWorkspaceManager extends Extension {
     }
 
     _checkCoveredFloaters(ws, mon) {
-        if (!this._moveWhenMax) return;
 
         const coveringWins = ws.list_windows().filter(w =>
             isTracked(w) && w.get_monitor() === mon &&
