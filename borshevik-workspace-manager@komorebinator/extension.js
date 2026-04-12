@@ -1139,28 +1139,14 @@ export default class BorshevikWorkspaceManager extends Extension {
             win.move_frame(true, fr.x, fr.y);
             win.move_resize_frame(true, fr.x, fr.y, fr.width, fr.height);
         } else {
-            // No geometry — wait for window to resize after unmaximize, then centre.
-            let done = false;
+            // No geometry — wait for window to report its natural size after unmaximize, then centre.
             let sigId = win.connect('size-changed', () => {
-                if (sigId) { win.disconnect(sigId); sigId = 0; }
-                if (done || !isTracked(win)) return;
-                done = true;
+                win.disconnect(sigId);
+                if (!isTracked(win)) return;
                 const wa2 = win.get_work_area_current_monitor();
                 const cur = win.get_frame_rect();
                 const fr2 = this._centredRect(wa2, cur.width / wa2.width, cur.height / wa2.height);
                 LOG('float(settle):', win.get_wm_class(), `→ (${fr2.x},${fr2.y},${fr2.width},${fr2.height})`);
-                win._bwmFloatRect = fr2;
-                win.move_frame(true, fr2.x, fr2.y);
-                win.move_resize_frame(true, fr2.x, fr2.y, fr2.width, fr2.height);
-            });
-            this._defer(() => {
-                if (sigId) { win.disconnect(sigId); sigId = 0; }
-                if (done || !isTracked(win)) return;
-                done = true;
-                const wa2 = win.get_work_area_current_monitor();
-                const cur = win.get_frame_rect();
-                const fr2 = this._centredRect(wa2, cur.width / wa2.width, cur.height / wa2.height);
-                LOG('float(fallback):', win.get_wm_class(), `→ (${fr2.x},${fr2.y},${fr2.width},${fr2.height})`);
                 win._bwmFloatRect = fr2;
                 win.move_frame(true, fr2.x, fr2.y);
                 win.move_resize_frame(true, fr2.x, fr2.y, fr2.width, fr2.height);
