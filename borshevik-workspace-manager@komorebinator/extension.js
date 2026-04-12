@@ -105,7 +105,7 @@ export default class BorshevikWorkspaceManager extends Extension {
         this._rulesUI = new WindowRulesUI(this);
 
         this._handles = [
-            [global.window_manager,    global.window_manager.connect('map', (_, act) => this._onMap(act))],
+            [global.display,           global.display.connect('window-created', (_, win) => this._onWindowCreated(win))],
             [global.display,           global.display.connect('grab-op-begin', (_, w, op) => this._onGrabBegin(w, op))],
             [global.display,           global.display.connect('grab-op-end',   (_, w, op) => this._onGrabEnd(w, op))],
             [global.display,           global.display.connect('restacked', () => this._onRestacked())],
@@ -448,6 +448,14 @@ export default class BorshevikWorkspaceManager extends Extension {
 
     _toRect(r) { return { x: r.x, y: r.y, width: r.width, height: r.height }; }
 
+    _centredRect(wa, wr, hr) {
+        const w = Math.round(wa.width  * wr);
+        const h = Math.round(wa.height * hr);
+        return { x: wa.x + Math.round((wa.width - w) / 2),
+                 y: wa.y + Math.round((wa.height - h) / 2),
+                 width: w, height: h };
+    }
+
     // Capture float geometry from a floating window and persist it.
     // Called ONLY from manual tile actions: _tileKeyboard and _finalizeDrag.
     _captureAndSaveFloatGeom(win) {
@@ -487,14 +495,36 @@ export default class BorshevikWorkspaceManager extends Extension {
 
     // ── Window signals ───────────────────────────────────────────────────────
 
-    _onMap(act) {
-        const win = act.meta_window;
-        LOG('map-raw:', win.get_wm_class(), `type=${win.window_type} skip=${win.skip_taskbar} sticky=${win.is_on_all_workspaces()}`);
+    _onWindowCreated(win) {
+        LOG('window-created:', win.get_wm_class(), `type=${win.window_type} skip=${win.skip_taskbar}`);
         if (!this._isRelevant(win)) return;
+        if (isTracked(win)) return;
 
+        const attach = () => {
+            const actor = win.get_compositor_private();
+            if (!actor) return;
+            const id = actor.connect('first-frame', () => {
+                actor.disconnect(id);
+                if (isTracked(win)) return; // already registered (e.g. via grab-op)
+                this._registerWindow(win);
+            });
+        };
+
+        const actor = win.get_compositor_private();
+        if (actor) {
+            attach();
+        } else {
+            const notifyId = win.connect('notify::compositor-private', () => {
+                win.disconnect(notifyId);
+                attach();
+            });
+        }
+    }
+
+    _registerWindow(win) {
         const r0 = win.get_frame_rect();
-        LOG('map:', win.get_wm_class(),
-            `ws=${win.get_workspace().index()} mon=${win.get_monitor()}`,
+        LOG('register:', win.get_wm_class(),
+            `ws=${win.get_workspace()?.index()} mon=${win.get_monitor()}`,
             `max=${win.maximized_horizontally && win.maximized_vertically}`,
             `fs=${win.fullscreen}`,
             `size=${r0.width}x${r0.height}`);
@@ -504,47 +534,31 @@ export default class BorshevikWorkspaceManager extends Extension {
         win._bwmPreMax       = undefined;
         win._bwmFloatRect    = undefined;
         win._bwmPendingGeom  = undefined;
-        win._bwmFirstFrame   = false;
+        win._bwmFirstFrame   = true;   // first-frame already fired — apply geometry immediately
         win._bwmHandled      = false;
         win._bwmAppliedRules = new Set();
 
         this._applyWindowRules(win);
 
-        // Seed _bwmFloatRect from saved geometry if available (no save — only manual tile saves)
+        // Seed _bwmFloatRect from saved geometry if available.
+        // Only store the actual floating size — never the maximized rect.
         if (!win.fullscreen) {
             const wa0   = win.get_work_area_current_monitor();
             const saved = this._loadFloatGeom(win.get_wm_class());
             if (saved) {
-                const w = Math.round(wa0.width  * saved.wr);
-                const h = Math.round(wa0.height * saved.hr);
-                win._bwmFloatRect = {
-                    x: wa0.x + Math.round((wa0.width  - w) / 2),
-                    y: wa0.y + Math.round((wa0.height - h) / 2),
-                    width: w, height: h };
-            } else {
+                win._bwmFloatRect = this._centredRect(wa0, saved.wr, saved.hr);
+            } else if (!(win.maximized_horizontally && win.maximized_vertically)) {
                 win._bwmFloatRect = this._toRect(r0);
             }
+            // else: opened maximized with no saved geometry — _bwmFloatRect stays undefined
         }
 
-        // Hook first-frame now so we catch it even for fast-starting apps
-        const actor = win.get_compositor_private();
-        if (actor) {
-            const id = actor.connect('first-frame', () => {
-                actor.disconnect(id);
-                win._bwmFirstFrame = true;
-                if (win._bwmPendingGeom && win._bwmState?.startsWith('tiled')) {
-                    const { x, y, w, h } = win._bwmPendingGeom;
-                    win._bwmPendingGeom = undefined;
-                    LOG('first-frame: applying pending tile geometry for', win.get_wm_class(), `x=${x} w=${w}`);
-                    win.move_frame(true, x, y);
-                    win.move_resize_frame(true, x, y, w, h);
-                } else if (win._bwmRuleGeom) {
-                    const { x, y, w, h } = win._bwmRuleGeom;
-                    win._bwmRuleGeom = undefined;
-                    LOG('first-frame: applying rule geometry for', win.get_wm_class());
-                    win.move_resize_frame(true, x, y, w, h);
-                }
-            });
+        // Apply rule geometry immediately (first-frame already fired)
+        if (win._bwmRuleGeom) {
+            const { x, y, w, h } = win._bwmRuleGeom;
+            win._bwmRuleGeom = undefined;
+            LOG('register: applying rule geometry for', win.get_wm_class());
+            win.move_resize_frame(true, x, y, w, h);
         }
 
         win.connect('unmanaged',         () => this._onUnmanaged(win));
@@ -675,8 +689,9 @@ export default class BorshevikWorkspaceManager extends Extension {
         if (full === (win._bwmState === 'maximized')) return;
 
         if (full) {
-            if (win._bwmState === 'floating')
-                win._bwmFloatRect = this._toRect(win.get_frame_rect());
+            // NOTE: do NOT update _bwmFloatRect here — the window is already maximized
+            // when this signal fires, so get_frame_rect() returns the maximized rect.
+            // The correct float rect is already in _bwmFloatRect from _registerWindow or _doFloat.
             win._bwmPreMax  = win._bwmState;
             win._bwmState   = 'maximized'; // must be set BEFORE any async ops to suppress re-entry
             LOG('→ maximized:', win.get_wm_class(), 'from', win._bwmPreMax);
@@ -1107,11 +1122,50 @@ export default class BorshevikWorkspaceManager extends Extension {
 
     _doFloat(win) {
         if (!isTracked(win)) return;
-        const fr = win._bwmFloatRect ?? this._toRect(win.get_frame_rect());
-        LOG('float:', win.get_wm_class(), `→ (${fr.x},${fr.y},${fr.width},${fr.height})`);
         win._bwmState = 'floating';
-        win.move_frame(true, fr.x, fr.y);
-        win.move_resize_frame(true, fr.x, fr.y, fr.width, fr.height);
+
+        const wa    = win.get_work_area_current_monitor();
+        const saved = this._loadFloatGeom(win.get_wm_class());
+
+        if (win._bwmFloatRect) {
+            const fr = win._bwmFloatRect;
+            LOG('float:', win.get_wm_class(), `→ (${fr.x},${fr.y},${fr.width},${fr.height})`);
+            win.move_frame(true, fr.x, fr.y);
+            win.move_resize_frame(true, fr.x, fr.y, fr.width, fr.height);
+        } else if (saved) {
+            const fr = this._centredRect(wa, saved.wr, saved.hr);
+            LOG('float(saved):', win.get_wm_class(), `→ (${fr.x},${fr.y},${fr.width},${fr.height})`);
+            win._bwmFloatRect = fr;
+            win.move_frame(true, fr.x, fr.y);
+            win.move_resize_frame(true, fr.x, fr.y, fr.width, fr.height);
+        } else {
+            // No geometry — wait for window to resize after unmaximize, then centre.
+            let done = false;
+            let sigId = win.connect('size-changed', () => {
+                if (sigId) { win.disconnect(sigId); sigId = 0; }
+                if (done || !isTracked(win)) return;
+                done = true;
+                const wa2 = win.get_work_area_current_monitor();
+                const cur = win.get_frame_rect();
+                const fr2 = this._centredRect(wa2, cur.width / wa2.width, cur.height / wa2.height);
+                LOG('float(settle):', win.get_wm_class(), `→ (${fr2.x},${fr2.y},${fr2.width},${fr2.height})`);
+                win._bwmFloatRect = fr2;
+                win.move_frame(true, fr2.x, fr2.y);
+                win.move_resize_frame(true, fr2.x, fr2.y, fr2.width, fr2.height);
+            });
+            this._defer(() => {
+                if (sigId) { win.disconnect(sigId); sigId = 0; }
+                if (done || !isTracked(win)) return;
+                done = true;
+                const wa2 = win.get_work_area_current_monitor();
+                const cur = win.get_frame_rect();
+                const fr2 = this._centredRect(wa2, cur.width / wa2.width, cur.height / wa2.height);
+                LOG('float(fallback):', win.get_wm_class(), `→ (${fr2.x},${fr2.y},${fr2.width},${fr2.height})`);
+                win._bwmFloatRect = fr2;
+                win.move_frame(true, fr2.x, fr2.y);
+                win.move_resize_frame(true, fr2.x, fr2.y, fr2.width, fr2.height);
+            });
+        }
     }
 
     // ── Auto-tile logic ──────────────────────────────────────────────────────
@@ -1231,6 +1285,8 @@ export default class BorshevikWorkspaceManager extends Extension {
 
         if (wr > 0.9 && hr > 0.9) {
             win._bwmOrigin = { ws: win.get_workspace() };
+            win._bwmPreMax = win._bwmState;
+            win._bwmState  = 'maximized'; // pre-set so _doMaximize guard fires and _bwmFloatRect is preserved
             this._doMaximize(win);
         } else if (hr > 0.9 && wr >= 0.2 && wr <= 0.8) {
             const customW   = Math.min(rect.width, Math.floor(wa.width * 0.8));
@@ -1245,7 +1301,9 @@ export default class BorshevikWorkspaceManager extends Extension {
                 this._tileWindow(win, side, layout[otherSide] ? null : customW);
             } else {
                 win._bwmOrigin = { ws };
-                this._moveToNewWorkspace(win);
+                // Pass preferred side so the move logic can reuse an existing workspace
+                // that already has a free slot (e.g. a sibling window that just moved there).
+                this._moveToNewWorkspace(win, preferred);
             }
         }
         // otherwise leave floating
