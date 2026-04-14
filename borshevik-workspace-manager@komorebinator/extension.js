@@ -255,7 +255,7 @@ export default class BorshevikWorkspaceManager extends Extension {
             btn.set_child(bg);
 
             // ── Drag-to-reorder ───────────────────────────────────────────────
-            btn._bwmWs = ws;
+            if (!isLast) btn._bwmWs = ws;
             btn._bwmBg = bg;
 
             btn.connect('button-press-event', (_actor, event) => {
