@@ -115,6 +115,8 @@ export default class BorshevikWorkspaceManager extends Extension {
             [global.workspace_manager, global.workspace_manager.connect('workspace-added',          () => this._scheduleIndicatorUpdate())],
             [global.workspace_manager, global.workspace_manager.connect('workspaces-reordered',     () => this._scheduleIndicatorUpdate())],
             [Shell.WindowTracker.get_default(), Shell.WindowTracker.get_default().connect('tracked-windows-changed', () => this._scheduleIndicatorUpdate())],
+            [Main.overview, Main.overview.connect('showing', () => this._logoBg?.add_style_class_name('bwm-logo-active'))],
+            [Main.overview, Main.overview.connect('hiding',  () => this._logoBg?.remove_style_class_name('bwm-logo-active'))],
         ];
 
         // Panel indicator — replaces the default activities/workspace dots
@@ -197,12 +199,16 @@ export default class BorshevikWorkspaceManager extends Extension {
         const logoPath = this.path + '/bwm_icon.svg';
         const logoBtn = new St.Button({
             style_class: 'bwm-logo-btn', reactive: true,
-            y_align: Clutter.ActorAlign.CENTER,
+            y_align: Clutter.ActorAlign.FILL,
         });
-        logoBtn.set_y_expand(false);
-        const logoIcon = new St.Icon({ gicon: Gio.icon_new_for_string(logoPath), icon_size: 22 });
+        logoBtn.set_y_expand(true);
+        const logoIcon = new St.Icon({ gicon: Gio.icon_new_for_string(logoPath), icon_size: 22,
+            y_align: Clutter.ActorAlign.CENTER });
         logoIcon.opacity = 204; // 80%
-        logoBtn.set_child(logoIcon);
+        const logoBg = new St.Bin({ style_class: 'bwm-logo-bg', child: logoIcon });
+        if (Main.overview.visible) logoBg.add_style_class_name('bwm-logo-active');
+        this._logoBg = logoBg;
+        logoBtn.set_child(logoBg);
         logoBtn.connect('enter-event', () => { logoIcon.opacity = 255; });
         logoBtn.connect('leave-event', () => { logoIcon.opacity = 204; });
         logoBtn.connect('clicked', () => Main.overview.toggle());
