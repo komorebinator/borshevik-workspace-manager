@@ -27,8 +27,8 @@ export default class Preferences extends ExtensionPreferences {
             group.add(row);
         };
 
-        addToggle('Move window when maximized', MOVE_WINDOW_WHEN_MAXIMIZED);
-        addToggle('Debug logging',              DEBUG_LOGGING);
+        addToggle('Open overview on last workspace', 'overview-on-last-workspace');
+        addToggle('Debug logging',                   DEBUG_LOGGING);
 
         page.add(group);
         window.add(page);

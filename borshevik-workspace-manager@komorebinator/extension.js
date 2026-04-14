@@ -117,6 +117,7 @@ export default class BorshevikWorkspaceManager extends Extension {
             [Shell.WindowTracker.get_default(), Shell.WindowTracker.get_default().connect('tracked-windows-changed', () => this._scheduleIndicatorUpdate())],
             [Main.overview, Main.overview.connect('showing', () => this._logoBg?.add_style_class_name('bwm-logo-active'))],
             [Main.overview, Main.overview.connect('hiding',  () => this._logoBg?.remove_style_class_name('bwm-logo-active'))],
+            [global.workspace_manager, global.workspace_manager.connect('active-workspace-changed', () => this._onActiveWorkspaceChanged())],
         ];
 
         // Panel indicator — replaces the default activities/workspace dots
@@ -177,6 +178,18 @@ export default class BorshevikWorkspaceManager extends Extension {
     }
 
     // ── Panel indicator ──────────────────────────────────────────────────────
+
+    _onActiveWorkspaceChanged() {
+        if (!this._settings.get_boolean('overview-on-last-workspace')) return;
+        if (Main.overview.visible) return;
+        const manager = global.workspace_manager;
+        const idx     = manager.get_active_workspace_index();
+        if (idx !== manager.get_n_workspaces() - 1) return;
+        const ws = manager.get_active_workspace();
+        const hasWindows = ws.list_windows().some(w => !w.is_on_all_workspaces() && this._isRelevant(w));
+        if (!hasWindows)
+            Main.overview.show();
+    }
 
     _scheduleIndicatorUpdate() {
         if (this._indicatorTimer) return;
