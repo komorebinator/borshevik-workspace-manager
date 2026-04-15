@@ -109,6 +109,7 @@ export default class BorshevikWorkspaceManager extends Extension {
             // Indicator signals
             [global.workspace_manager, global.workspace_manager.connect('active-workspace-changed', () => this._scheduleIndicatorUpdate())],
             [global.workspace_manager, global.workspace_manager.connect('workspace-added',          () => this._scheduleIndicatorUpdate())],
+            [global.workspace_manager, global.workspace_manager.connect('workspace-removed',        () => this._scheduleIndicatorUpdate())],
             [global.workspace_manager, global.workspace_manager.connect('workspaces-reordered',     () => this._scheduleIndicatorUpdate())],
             [Shell.WindowTracker.get_default(), Shell.WindowTracker.get_default().connect('tracked-windows-changed', () => this._scheduleIndicatorUpdate())],
             [Main.overview, Main.overview.connect('showing', () => this._logoBg?.add_style_class_name('bwm-logo-active'))],
