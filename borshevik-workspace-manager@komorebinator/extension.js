@@ -24,8 +24,7 @@ const DRAG_THRESHOLD  = 20;   // px cursor must travel before snap zones activat
 // win._bwmState      'floating' | 'tiled-left' | 'tiled-right' | 'maximized'
 // win._bwmFloatRect  { x, y, width, height } | undefined  — saved pre-tile geometry
 // win._bwmPreMax     string | undefined  — state before maximize, for restore
-// win._bwmPendingGeom { x, y, w, h } | undefined  — queued geometry before first-frame
-// win._bwmFirstFrame bool — has first buffer commit fired
+
 // win._bwmHandled    bool — passed through handleNewWindow (batch dedup)
 // win._bwmMoving        bool      — we initiated a workspace change (skip auto-tile)
 // win._bwmJustMoved     bool      — user manually moved to this ws (skip coverage check once)
@@ -429,7 +428,7 @@ export default class BorshevikWorkspaceManager extends Extension {
             if (a.above.value) win.make_above();
             else win.unmake_above();
         }
-        if (a.openOnNewWorkspace?.enabled && a.openOnNewWorkspace.value && !win._bwmFirstFrame)
+        if (a.openOnNewWorkspace?.enabled && a.openOnNewWorkspace.value && !win._bwmHandled)
             win._bwmForceNewWs = rule.id;
         if (a.geometry?.enabled) {
             const wa = win.get_work_area_current_monitor();
@@ -437,11 +436,7 @@ export default class BorshevikWorkspaceManager extends Extension {
             const y  = Math.round(wa.y + wa.height * a.geometry.y / 100);
             const w  = Math.round(wa.width  * a.geometry.w / 100);
             const h  = Math.round(wa.height * a.geometry.h / 100);
-            if (win._bwmFirstFrame) {
-                win.move_resize_frame(true, x, y, w, h);
-            } else {
-                win._bwmRuleGeom = { x, y, w, h };
-            }
+            win.move_resize_frame(true, x, y, w, h);
         }
         if (!win._bwmAppliedRules) win._bwmAppliedRules = new Set();
         win._bwmAppliedRules.add(rule.id);
@@ -572,8 +567,6 @@ export default class BorshevikWorkspaceManager extends Extension {
         win._bwmState        = 'floating';
         win._bwmPreMax       = undefined;
         win._bwmFloatRect    = undefined;
-        win._bwmPendingGeom  = undefined;
-        win._bwmFirstFrame   = true;   // first-frame already fired — apply geometry immediately
         win._bwmHandled      = false;
         win._bwmAppliedRules = new Set();
 
@@ -590,14 +583,6 @@ export default class BorshevikWorkspaceManager extends Extension {
                 win._bwmFloatRect = this._toRect(r0);
             }
             // else: opened maximized with no saved geometry — _bwmFloatRect stays undefined
-        }
-
-        // Apply rule geometry immediately (first-frame already fired)
-        if (win._bwmRuleGeom) {
-            const { x, y, w, h } = win._bwmRuleGeom;
-            win._bwmRuleGeom = undefined;
-            LOG('register: applying rule geometry for', win.get_wm_class());
-            win.move_resize_frame(true, x, y, w, h);
         }
 
         win.connect('unmanaged',         () => this._onUnmanaged(win));
@@ -644,8 +629,6 @@ export default class BorshevikWorkspaceManager extends Extension {
         delete win._bwmState;
         delete win._bwmFloatRect;
         delete win._bwmPreMax;
-        delete win._bwmPendingGeom;
-        delete win._bwmFirstFrame;
         delete win._bwmHandled;
         delete win._bwmMoving;
         delete win._bwmJustMoved;
@@ -654,7 +637,6 @@ export default class BorshevikWorkspaceManager extends Extension {
         delete win._bwmTiledMon;
         delete win._bwmAppliedRules;
         delete win._bwmForceNewWs;
-        delete win._bwmRuleGeom;
 
         this._pendingBatch?.delete(win);
 
@@ -847,7 +829,6 @@ export default class BorshevikWorkspaceManager extends Extension {
             win._bwmState      = 'floating';
             win._bwmPreMax     = undefined;
             win._bwmFloatRect  = undefined;
-            win._bwmFirstFrame = true;
             win._bwmHandled    = false;
             win.connect('unmanaged',         () => this._onUnmanaged(win));
             win.connect('workspace-changed', () => this._onWorkspaceChanged(win));
@@ -1063,7 +1044,7 @@ export default class BorshevikWorkspaceManager extends Extension {
                     const fresh = this._getLayout(ws, mon);
                     const p = fresh[other];
                     if (p && p !== win) {
-                        const pw = p._bwmPendingGeom?.w ?? p.get_frame_rect().width;
+                        const pw = p.get_frame_rect().width;
                         overrideW = wa.width - pw;
                     }
                 }
@@ -1078,7 +1059,7 @@ export default class BorshevikWorkspaceManager extends Extension {
             // No occupant — fill space left by partner if present
             const partner = layout[other];
             if (partner && partner !== win) {
-                const pw = partner._bwmPendingGeom?.w ?? partner.get_frame_rect().width;
+                const pw = partner.get_frame_rect().width;
                 overrideW = wa.width - pw;
             }
         }
@@ -1138,11 +1119,6 @@ export default class BorshevikWorkspaceManager extends Extension {
                 if (sigId !== null) { win.disconnect(sigId); sigId = null; }
                 return GLib.SOURCE_REMOVE;
             });
-        } else if (!win._bwmFirstFrame) {
-            // Window hasn't drawn its first frame yet — move_resize_frame may be ignored.
-            // Store the geometry; the first-frame handler in _onMap will apply it.
-            LOG('_doTile: first-frame not yet fired, storing pending geometry for', win.get_wm_class());
-            win._bwmPendingGeom = { x, y: wa.y, w, h: wa.height };
         } else {
             applyGeometry();
         }
