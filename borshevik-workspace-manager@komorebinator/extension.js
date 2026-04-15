@@ -571,7 +571,7 @@ export default class BorshevikWorkspaceManager extends Extension {
         win._bwmHandled      = false;
         win._bwmAppliedRules = new Set();
 
-        this._applyWindowRules(win);
+        this._defer(() => this._applyWindowRules(win));
 
         // Seed _bwmFloatRect from saved geometry if available.
         // Only store the actual floating size — never the maximized rect.
