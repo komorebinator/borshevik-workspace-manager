@@ -40,10 +40,6 @@ export default class BorshevikWorkspaceManager extends Extension {
     constructor(metadata) {
         super(metadata);
 
-        // Persistent across enable/disable cycles (e.g. screen lock/unlock).
-        // Workspaces we created — MetaWorkspace OBJECTS, stable across index shifts.
-        this._ourWorkspaces = new Set();
-
         // Move serialization queue
         this._moveQueue    = [];
         this._moveInFlight = false;
@@ -118,7 +114,27 @@ export default class BorshevikWorkspaceManager extends Extension {
             [Main.overview, Main.overview.connect('showing', () => this._logoBg?.add_style_class_name('bwm-logo-active'))],
             [Main.overview, Main.overview.connect('hiding',  () => this._logoBg?.remove_style_class_name('bwm-logo-active'))],
             [global.workspace_manager, global.workspace_manager.connect('active-workspace-changed', () => this._onActiveWorkspaceChanged())],
+            [global.workspace_manager, global.workspace_manager.connect('workspace-added', (_mgr, idx) => {
+                const ws = _mgr.get_workspace_by_index(idx);
+                const sigId = ws.connect('window-removed', (_ws, win) => {
+                    if (win._bwmMoving) return;
+                    this._defer(() => this._leaveIfEmpty(ws));
+                });
+                this._wsHandles.push([ws, sigId]);
+            })],
         ];
+
+        // Connect window-removed on all existing workspaces
+        this._wsHandles = [];
+        const _wsManager = global.workspace_manager;
+        for (let i = 0; i < _wsManager.get_n_workspaces(); i++) {
+            const ws = _wsManager.get_workspace_by_index(i);
+            const sigId = ws.connect('window-removed', (_ws, win) => {
+                if (win._bwmMoving) return;
+                this._defer(() => this._leaveIfEmpty(ws));
+            });
+            this._wsHandles.push([ws, sigId]);
+        }
 
         // Panel indicator — replaces the default activities/workspace dots
         this._indicatorTimer = null;
@@ -173,6 +189,9 @@ export default class BorshevikWorkspaceManager extends Extension {
         this._mutterKbSettings.set_strv('toggle-tiled-left',  this._savedTileLeft);
         this._mutterKbSettings.set_strv('toggle-tiled-right', this._savedTileRight);
         this._mutterKbSettings = null;
+
+        this._wsHandles?.splice(0).forEach(([ws, id]) => { try { ws.disconnect(id); } catch (_) {} });
+        this._wsHandles = null;
 
         this._settings = null;
     }
@@ -643,8 +662,11 @@ export default class BorshevikWorkspaceManager extends Extension {
     }
 
     _leaveIfEmpty(ws) {
-        LOG('leaveIfEmpty called: ws', ws?.index(), 'isOurs=', this._ourWorkspaces.has(ws), 'active=', global.workspace_manager.get_active_workspace()?.index());
-        if (!this._ourWorkspaces.has(ws)) return;
+        if (!this._settings) return;
+        const action = this._settings.get_string('on-empty-workspace');
+        if (action === 'nothing') return;
+
+        LOG('leaveIfEmpty called: ws', ws?.index(), 'active=', global.workspace_manager.get_active_workspace()?.index());
         const wsIdx = ws.index();
         if (wsIdx < 0) return; // workspace already removed
 
@@ -655,6 +677,13 @@ export default class BorshevikWorkspaceManager extends Extension {
             .some(w => !w.is_on_all_workspaces() && this._isRelevant(w));
         if (hasWindows) return;
 
+        if (action === 'overview') {
+            if (!Main.overview.visible)
+                Main.overview.show();
+            return;
+        }
+
+        // action === 'prev': navigate to adjacent workspace
         let target = manager.get_workspace_by_index(wsIdx - 1);
         if (!target) {
             // Leftmost workspace — try right if it has windows
@@ -666,8 +695,7 @@ export default class BorshevikWorkspaceManager extends Extension {
             target = right;
         }
 
-        LOG('leaveIfEmpty: ws', wsIdx, '→ ws', target.index(), '(our workspace, now empty)');
-        this._ourWorkspaces.delete(ws);
+        LOG('leaveIfEmpty: ws', wsIdx, '→ ws', target.index());
         target.activate(global.get_current_time());
     }
 
@@ -1619,13 +1647,6 @@ export default class BorshevikWorkspaceManager extends Extension {
             manager.get_workspace_by_index(manager.get_n_workspaces() - 1),
             newIdx
         );
-        const newWs = manager.get_workspace_by_index(newIdx);
-        this._ourWorkspaces.add(newWs);
-        newWs.connect('window-removed', (_ws, win) => {
-            if (win._bwmMoving) return;
-            this._defer(() => this._leaveIfEmpty(newWs));
-        });
-
         for (const win of wins) {
             if (!isTracked(win)) continue;
             win._bwmMoving = true;
@@ -1729,11 +1750,6 @@ export default class BorshevikWorkspaceManager extends Extension {
             newIdx
         );
         const newWs = manager.get_workspace_by_index(newIdx);
-        this._ourWorkspaces.add(newWs);
-        newWs.connect('window-removed', (_ws, win) => {
-            if (win._bwmMoving) return;
-            this._defer(() => this._leaveIfEmpty(newWs));
-        });
 
         win._bwmMoving = true;
         win.change_workspace_by_index(newIdx, false);

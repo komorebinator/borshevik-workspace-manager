@@ -33,5 +33,15 @@
       <summary>Window rules</summary>
       <description>JSON array of window rule objects with conditions and actions.</description>
     </key>
+    <key name="on-empty-workspace" type="s">
+      <default>'prev'</default>
+      <summary>Action when last window on workspace is closed</summary>
+      <description>What to do when the active workspace becomes empty. "prev" navigates to the adjacent workspace, "overview" opens the GNOME overview, "nothing" does nothing.</description>
+      <choices>
+        <choice value="prev"/>
+        <choice value="overview"/>
+        <choice value="nothing"/>
+      </choices>
+    </key>
   </schema>
 </schemalist>
