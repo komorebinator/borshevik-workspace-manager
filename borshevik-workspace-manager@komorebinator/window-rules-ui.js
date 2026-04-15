@@ -11,18 +11,19 @@ import GLib   from 'gi://GLib';
 import Shell  from 'gi://Shell';
 import St     from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import { gettext as _ } from 'resource:///org/gnome/shell/extensions/extension.js';
 
-const LABELS = {
-    class:              'WM Class',
-    title:              'Title',
-    onAllWorkspaces:    'Show on all workspaces',
-    above:              'Always on top',
-    skipTaskbar:        'Hidden from taskbar',
-    fullscreen:         'Fullscreen',
-    maximized:          'Maximized',
-    geometry:           'Geometry (%)',
-    openOnNewWorkspace: 'Open on new workspace',
-};
+const LABELS = () => ({
+    class:              _('WM Class'),
+    title:              _('Title'),
+    onAllWorkspaces:    _('Show on all workspaces'),
+    above:              _('Always on top'),
+    skipTaskbar:        _('Hidden from taskbar'),
+    fullscreen:         _('Fullscreen'),
+    maximized:          _('Maximized'),
+    geometry:           _('Geometry (%)'),
+    openOnNewWorkspace: _('Open on new workspace'),
+});
 
 export class WindowRulesUI {
     constructor(extension) {
@@ -83,14 +84,14 @@ export class WindowRulesUI {
         this._widget.add_child(header);
 
         header.add_child(new St.Label({
-            text: 'Window Rules',
+            text: _('Window Rules'),
             style_class: 'bwm-rules-title',
             y_align: Clutter.ActorAlign.CENTER,
             x_expand: true,
         }));
 
         this._tabBtns = [];
-        for (const [label, idx] of [['Windows', 0], ['Rules', 1]]) {
+        for (const [label, idx] of [[_('Windows'), 0], [_('Rules'), 1]]) {
             const btn = new St.Button({
                 label,
                 style_class: 'bwm-rules-tab',
@@ -151,7 +152,7 @@ export class WindowRulesUI {
 
         if (wins.length === 0) {
             vbox.add_child(new St.Label({
-                text: 'No windows on current workspace.',
+                text: _('No windows on current workspace.'),
                 style_class: 'bwm-rules-empty',
                 x_align: Clutter.ActorAlign.CENTER,
             }));
@@ -197,7 +198,7 @@ export class WindowRulesUI {
 
         // New rule button
         const newBtn = new St.Button({
-            label: '+ New rule for this window',
+            label: _('+ New rule for this window'),
             style_class: 'bwm-rules-new-btn',
             x_align: Clutter.ActorAlign.START,
             reactive: true,
@@ -219,7 +220,7 @@ export class WindowRulesUI {
         this._contentBox.add_child(scroll);
 
         const newBtn = new St.Button({
-            label: '+ New rule',
+            label: _('+ New rule'),
             style_class: 'bwm-rules-new-btn',
             x_align: Clutter.ActorAlign.START,
             reactive: true,
@@ -309,14 +310,14 @@ export class WindowRulesUI {
         draft.actions.geometry           ??= { enabled: false, x: 0, y: 0, w: 50, h: 50 };
 
         // Conditions
-        box.add_child(new St.Label({ text: 'Conditions', style_class: 'bwm-rules-section-label' }));
+        box.add_child(new St.Label({ text: _('Conditions'), style_class: 'bwm-rules-section-label' }));
         for (const key of ['class', 'title'])
             box.add_child(this._makeRegexRow(key, draft.conditions[key], refresh));
         for (const key of ['onAllWorkspaces', 'above', 'skipTaskbar', 'fullscreen', 'maximized'])
             box.add_child(this._makeBoolCondRow(key, draft.conditions[key]));
 
         // Actions
-        box.add_child(new St.Label({ text: 'Actions', style_class: 'bwm-rules-section-label' }));
+        box.add_child(new St.Label({ text: _('Actions'), style_class: 'bwm-rules-section-label' }));
         for (const key of ['onAllWorkspaces', 'above', 'openOnNewWorkspace'])
             box.add_child(this._makeActionBoolRow(key, draft.actions[key]));
         box.add_child(this._makeGeomRow(draft.actions.geometry));
@@ -325,7 +326,7 @@ export class WindowRulesUI {
         const btnRow = new St.BoxLayout({ style_class: 'bwm-rules-btn-row', x_expand: true });
         box.add_child(btnRow);
 
-        const saveBtn = new St.Button({ label: 'Save', style_class: 'bwm-rules-save-btn', reactive: true });
+        const saveBtn = new St.Button({ label: _('Save'), style_class: 'bwm-rules-save-btn', reactive: true });
         saveBtn.connect('clicked', () => {
             if (!this._hasEnabledCondition(draft)) return;
             const rules = this._getRules();
@@ -341,7 +342,7 @@ export class WindowRulesUI {
         });
         btnRow.add_child(saveBtn);
 
-        const cancelBtn = new St.Button({ label: 'Cancel', style_class: 'bwm-rules-cancel-btn', reactive: true });
+        const cancelBtn = new St.Button({ label: _('Cancel'), style_class: 'bwm-rules-cancel-btn', reactive: true });
         cancelBtn.connect('clicked', () => {
             this._isEditing = false;
             GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => { onCollapse?.(); return GLib.SOURCE_REMOVE; });
@@ -350,7 +351,7 @@ export class WindowRulesUI {
 
         if (!isNew) {
             btnRow.add_child(new St.Widget({ x_expand: true }));
-            const delBtn = new St.Button({ label: 'Delete', style_class: 'bwm-rules-del-btn', reactive: true });
+            const delBtn = new St.Button({ label: _('Delete'), style_class: 'bwm-rules-del-btn', reactive: true });
             delBtn.connect('clicked', () => {
                 const rules = this._getRules().filter(r => r.id !== rule.id);
                 this._saveRules(rules);
@@ -365,7 +366,7 @@ export class WindowRulesUI {
     _makeRegexRow(key, cond, onChange) {
         const row = new St.BoxLayout({ style_class: 'bwm-rules-row', x_expand: true });
         row.add_child(this._makeToggle(cond.enabled, v => { cond.enabled = v; }));
-        row.add_child(new St.Label({ text: LABELS[key] ?? key, style_class: 'bwm-rules-row-label', y_align: Clutter.ActorAlign.CENTER }));
+        row.add_child(new St.Label({ text: LABELS()[key] ?? key, style_class: 'bwm-rules-row-label', y_align: Clutter.ActorAlign.CENTER }));
         const entry = new St.Entry({ text: cond.regex ?? '', style_class: 'bwm-rules-entry', x_expand: true });
         entry.get_clutter_text().connect('text-changed', () => {
             const val = entry.get_text();
@@ -381,7 +382,7 @@ export class WindowRulesUI {
     _makeBoolCondRow(key, cond) {
         const row = new St.BoxLayout({ style_class: 'bwm-rules-row', x_expand: true });
         row.add_child(this._makeToggle(cond.enabled, v => { cond.enabled = v; }));
-        row.add_child(new St.Label({ text: LABELS[key] ?? key, style_class: 'bwm-rules-row-label', x_expand: true, y_align: Clutter.ActorAlign.CENTER }));
+        row.add_child(new St.Label({ text: LABELS()[key] ?? key, style_class: 'bwm-rules-row-label', x_expand: true, y_align: Clutter.ActorAlign.CENTER }));
         // value is always true — we match windows that HAVE this property set
         return row;
     }
@@ -389,7 +390,7 @@ export class WindowRulesUI {
     _makeActionBoolRow(key, action) {
         const row = new St.BoxLayout({ style_class: 'bwm-rules-row', x_expand: true });
         row.add_child(this._makeToggle(action.enabled, v => { action.enabled = v; }));
-        row.add_child(new St.Label({ text: LABELS[key] ?? key, style_class: 'bwm-rules-row-label', x_expand: true, y_align: Clutter.ActorAlign.CENTER }));
+        row.add_child(new St.Label({ text: LABELS()[key] ?? key, style_class: 'bwm-rules-row-label', x_expand: true, y_align: Clutter.ActorAlign.CENTER }));
         // value is always true — enable toggle is sufficient
         return row;
     }
@@ -418,14 +419,14 @@ export class WindowRulesUI {
 
     _makeToggle(initial, onChange) {
         const btn = new St.Button({
-            label: initial ? 'ON' : 'OFF',
+            label: initial ? _('ON') : _('OFF'),
             style_class: initial ? 'bwm-toggle bwm-toggle-on' : 'bwm-toggle',
             reactive: true,
         });
         let state = initial;
         btn.connect('clicked', () => {
             state = !state;
-            btn.label      = state ? 'ON' : 'OFF';
+            btn.label      = state ? _('ON') : _('OFF');
             btn.style_class = state ? 'bwm-toggle bwm-toggle-on' : 'bwm-toggle';
             onChange(state);
         });
@@ -481,7 +482,7 @@ export class WindowRulesUI {
             .filter(([, a]) => a.enabled)
             .map(([k]) => k === 'geometry' ? 'geom' : (LABELS[k] ?? k))
             .join(', ');
-        return (conds || '(no conditions)') + '  →  ' + (acts || '(no actions)');
+        return (conds || _('(no conditions)')) + '  →  ' + (acts || _('(no actions)'));
     }
 
     _hasEnabledCondition(rule) {

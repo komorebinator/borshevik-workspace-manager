@@ -12,6 +12,7 @@ const DEBUG_LOGGING = 'debug-logging';
 
 export default class Preferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
+        const _ = this.gettext.bind(this);
         const settings = this.getSettings();
 
         const page  = new Adw.PreferencesPage();
@@ -26,13 +27,13 @@ export default class Preferences extends ExtensionPreferences {
             group.add(row);
         };
 
-        addToggle('Open overview on last workspace', 'overview-on-last-workspace');
-        addToggle('Debug logging',                   DEBUG_LOGGING);
+        addToggle(_('Open overview on last workspace'), 'overview-on-last-workspace');
+        addToggle(_('Debug logging'),                   DEBUG_LOGGING);
 
         // on-empty-workspace combo
         const emptyWsKeys   = ['prev', 'overview', 'nothing'];
-        const emptyWsLabels = ['Go back', 'Open overview', 'Do nothing'];
-        const emptyWsRow    = new Adw.ComboRow({ title: 'When last window on workspace closes' });
+        const emptyWsLabels = [_('Go back'), _('Open overview'), _('Do nothing')];
+        const emptyWsRow    = new Adw.ComboRow({ title: _('When last window on workspace closes') });
         const emptyWsModel  = new Gtk.StringList();
         emptyWsLabels.forEach(s => emptyWsModel.append(s));
         emptyWsRow.model    = emptyWsModel;

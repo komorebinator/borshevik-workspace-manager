@@ -9,7 +9,7 @@ import Meta  from 'gi://Meta';
 import Shell from 'gi://Shell';
 import St    from 'gi://St';
 import Gio   from 'gi://Gio';
-import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
+import { Extension, gettext as _ } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { WindowRulesUI } from './window-rules-ui.js';
 
@@ -48,6 +48,7 @@ export default class BorshevikWorkspaceManager extends Extension {
     // ── Lifecycle ────────────────────────────────────────────────────────────
 
     enable() {
+        this.initTranslations();
         this._settings = this.getSettings();
 
         const updateLog = () => {

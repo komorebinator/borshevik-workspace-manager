@@ -1,0 +1,107 @@
+# Russian translation for Borshevik Workspace Manager
+# Copyright (C) 2026 komorebinator
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: borshevik-workspace-manager\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-04-15\n"
+"PO-Revision-Date: 2026-04-15\n"
+"Last-Translator: komorebinator\n"
+"Language-Team: Russian\n"
+"Language: ru\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
+
+msgid "WM Class"
+msgstr "Класс окна"
+
+msgid "Title"
+msgstr "Заголовок"
+
+msgid "Show on all workspaces"
+msgstr "Показывать на всех рабочих столах"
+
+msgid "Always on top"
+msgstr "Всегда поверх"
+
+msgid "Hidden from taskbar"
+msgstr "Скрыто из панели задач"
+
+msgid "Fullscreen"
+msgstr "Полноэкранный"
+
+msgid "Maximized"
+msgstr "Развёрнуто"
+
+msgid "Geometry (%)"
+msgstr "Геометрия (%)"
+
+msgid "Open on new workspace"
+msgstr "Открывать на новом рабочем столе"
+
+msgid "Window Rules"
+msgstr "Правила окон"
+
+msgid "Windows"
+msgstr "Окна"
+
+msgid "Rules"
+msgstr "Правила"
+
+msgid "No windows on current workspace."
+msgstr "Нет окон на текущем рабочем столе."
+
+msgid "+ New rule for this window"
+msgstr "+ Новое правило для этого окна"
+
+msgid "+ New rule"
+msgstr "+ Новое правило"
+
+msgid "Conditions"
+msgstr "Условия"
+
+msgid "Actions"
+msgstr "Действия"
+
+msgid "Save"
+msgstr "Сохранить"
+
+msgid "Cancel"
+msgstr "Отмена"
+
+msgid "Delete"
+msgstr "Удалить"
+
+msgid "ON"
+msgstr "ВКЛ"
+
+msgid "OFF"
+msgstr "ВЫКЛ"
+
+msgid "(no conditions)"
+msgstr "(нет условий)"
+
+msgid "(no actions)"
+msgstr "(нет действий)"
+
+msgid "Open overview on last workspace"
+msgstr "Открывать обзор на последнем рабочем столе"
+
+msgid "Debug logging"
+msgstr "Отладочные логи"
+
+msgid "Go back"
+msgstr "Вернуться назад"
+
+msgid "Open overview"
+msgstr "Открыть обзор"
+
+msgid "Do nothing"
+msgstr "Ничего не делать"
+
+msgid "When last window on workspace closes"
+msgstr "При закрытии последнего окна на рабочем столе"
