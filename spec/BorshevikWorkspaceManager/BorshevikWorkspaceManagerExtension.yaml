@@ -1,0 +1,495 @@
+description: |
+  GNOME Shell extension entry point — single default-exported class extending the Shell
+  Extension base class. Implements a tiling + workspace-automation window manager: a
+  two-slot (left/right) tile engine per workspace+monitor, automatic workspace creation
+  for maximized/fullscreen/tiled overflow, a panel indicator replacing the default
+  activities/workspace dots, and a window-rules engine (regex match on class/title,
+  geometry/sticky/above/new-workspace actions) with its own overlay UI.
+
+  State model: all per-window extension state lives on the Meta.Window object itself
+  (never in Maps or index-keyed structures — see the win._bwm* fields below), so it
+  survives workspace index shifts and enable/disable cycles. isTracked(win) is the
+  module-level helper `win._bwmState !== undefined`, used pervasively as the gate for
+  "does the extension manage this window at all".
+extends: @Extension
+target: @GnomeShell
+platform: GJS (GNOME Shell 49/50) — Clutter, GLib, Meta, Shell, St, Gio
+src: borshevik-workspace-manager@komorebinator/extension.js
+guidelines:
+  - "Each window action is one function with explicit parameters. No flags, no shared state threaded between steps."
+  - "Functions own their workspace logic: if a new workspace is needed they create it; if a free slot exists they take it. Callers say what they want, not how to do it."
+  - "One code path per action — tiling from keyboard, on window open, and on return from displacement all go through the same tileWindow()."
+  - "State lives on the window (win._bwmState, win._bwmFloatRect, etc.), never in Maps or index-keyed structures."
+  - "Layout is computed on demand by scanning live windows (_getLayout), never cached — always consistent by construction, no synchronization bugs possible."
+  - "A window is 'blocking' if win.fullscreen, or win.get_maximized() === Meta.MaximizeFlags.BOTH, or win._bwmState === 'maximized'. Use one isTracked/blocking check everywhere; never read maximized_horizontally / maximized_vertically directly outside _matchesRule (which mirrors Meta's own per-axis flags for rule conditions only)."
+  - "Chrome async geometry: after unmaximize, Chrome restores its pre-maximize position after the extension applies tile geometry. Fixed by re-applying geometry once on the next size-changed signal (see _doTile)."
+  - "Move serialization: simultaneous workspace creation/moves corrupt workspace indices. Fixed by _moveQueue + _moveInFlight serializing all _moveToNewWorkspace calls (see _finishMove)."
+  - "notify::maximized double-fire: both notify::maximized-horizontally and notify::maximized-vertically fire for one user operation. Fixed by state-based dedup in _onMaximizeChange (compares the new 'full' boolean against the current _bwmState before acting)."
+  - "Chrome tab-detach: detached tab windows on Wayland never fire the 'map'/window-created signal. Fixed by late-registering them in _onGrabBegin (grab-op-begin)."
+  - "150ms batch window: Chrome session-restore opens many windows simultaneously. They are collected in _pendingBatch and processed together by _flushBatch so placement decisions see the final set, not one window at a time."
+  - "Every signal handler and every state-mutating method calls LOG() near its entry and at each key transition, with an action-name prefix and the relevant context (window class, computed state, target side/workspace) — e.g. LOG('tileWindow:', win.get_wm_class(), ...). This is not spelled out per individual @Function description; preserve it as a pervasive instrumentation pattern across the whole class when regenerating, not just in the functions where it happens to be mentioned."
+fields:
+  - id: SNAP_PX
+    type: number
+    default: 32
+    description: Pixel distance from a work-area edge that activates a drag snap zone (left/right/maximize preview).
+  - id: DRAG_THRESHOLD
+    type: number
+    default: 20
+    description: Pixels the cursor must travel from drag-start before snap zones and tile lazy-detach activate.
+  - id: LOG
+    type: "(...args) => void"
+    description: Starts as a no-op; reassigned in enable() (and on every 'changed::debug-logging') to a console.log wrapper prefixed '[BWM]' when the 'debug-logging' GSettings key is true, else back to a no-op.
+  - id: win._bwmState
+    type: "'floating' | 'tiled-left' | 'tiled-right' | 'maximized' | undefined"
+    description: Attached to every Meta.Window the extension manages. undefined means untracked (isTracked(win) checks this). The single source of truth for which of the four placement states a window is in.
+  - id: win._bwmFloatRect
+    type: "{x, y, width, height} | undefined"
+    description: Last known floating geometry. Only ever written from manual tile actions (_captureAndSaveFloatGeom) or when a window naturally settles while floating — never from auto-tile paths.
+  - id: win._bwmPreMax
+    type: "string | undefined"
+    description: The _bwmState value to restore to once the window is unmaximized.
+  - id: win._bwmOrigin
+    type: "{ws: MetaWorkspace, side?: string} | undefined"
+    description: The workspace (and tile slot, if any) this window should attempt to return to once free — set when the window is displaced, maximized off its workspace, or moved to a dedicated workspace; consumed (deleted) by whichever function next acts on it.
+  - id: win._bwmMoving
+    type: boolean
+    description: Set true for the duration of an extension-initiated workspace change, so the resulting 'workspace-changed' signal is recognised as system-initiated (not a user move) and ignored by _onWorkspaceChanged.
+  - id: win._bwmHandled
+    type: boolean
+    description: True once the window has passed through _handleNewWindow. Used by the 150ms batch window to distinguish "already placed" batch siblings from ones still pending placement.
+  - id: win._bwmJustMoved
+    type: boolean
+    description: Set when the user manually moves a window to a new workspace; consumed once by the next covered-floater check (_checkCoveredFloaters) to skip relocating a window the user just placed there on purpose.
+  - id: win._bwmAppliedRules
+    type: "Set<uuid>"
+    description: Ids of window rules already applied to this window at map time; read by rules-ui to show which rules apply to a given window, and checked by _applyRule to avoid reapplying openOnNewWorkspace after the window has already been handled.
+  - id: win._bwmTiledWs
+    type: MetaWorkspace
+    description: The workspace this window was tiled on, recorded by _tileWindow. Used in preference to get_workspace() at points (notably unmanaged) where the live accessor may already be unreliable.
+  - id: win._bwmTiledMon
+    type: number
+    description: The monitor this window was tiled on, recorded by _tileWindow. Used in preference to get_monitor(), which returns -1 once a window starts unmanaging.
+  - id: win._bwmForceNewWs
+    type: "string | undefined"
+    description: Set by _applyRule when a window rule's openOnNewWorkspace action fires; holds the rule id. Consumed by _handleNewWindow, which routes the window to _moveToRuleWorkspace instead of the normal placement heuristics.
+  - id: this._moveQueue
+    type: "Array<{win, tileOnArrive, direction}>"
+    default: "[]"
+    description: FIFO queue of pending _moveToNewWorkspace calls received while another move is already in flight; drained one at a time by _finishMove. Set up in the constructor so it survives across enable/disable boundaries within one extension instance's lifetime (though in practice enable() re-initialises most other state).
+  - id: this._moveInFlight
+    type: boolean
+    default: false
+    description: True while a _doMoveToNewWorkspace call is executing; gates _moveToNewWorkspace into either running immediately or queuing, serializing all workspace-creating moves to avoid index corruption from concurrent creates.
+  - id: this._settings
+    type: Gio.Settings
+    description: This extension's GSettings object (schema org.gnome.shell.extensions.borshevik-workspace-manager), created in enable() and nulled in disable().
+  - id: this._handles
+    type: "Array<[GObject.Object, number]>"
+    description: Every top-level signal connection made in enable() (display, workspace-manager, settings, tracker, overview), as [object, signalId] pairs; disconnected in bulk at the start of disable().
+  - id: this._wsHandles
+    type: "Array<[Meta.Workspace, number]>"
+    description: Per-workspace 'window-removed' connections (one per existing/added workspace), as [workspace, signalId] pairs; disconnected in disable() with each disconnect wrapped in try/catch since a workspace may already be gone.
+  - id: this._restackedTimer
+    type: "number | null"
+    description: GLib source id for the 80ms 'restacked' debounce timer (_onRestacked); null when no check is pending.
+  - id: this._pendingBatch
+    type: "Set<Meta.Window> | null"
+    description: Windows registered via _registerWindow that are waiting for the 150ms batch window to elapse before _flushBatch processes them together.
+  - id: this._batchTimer
+    type: "number | null"
+    description: GLib source id for the 150ms batch-flush timer; null when no flush is pending.
+  - id: this._currentBatch
+    type: "Set<Meta.Window> | null"
+    description: Snapshot of the batch currently being processed by _flushBatch/_handleNewWindow, non-null only for the duration of that processing; lets _handleNewWindow recognise not-yet-placed batch siblings as distinct from genuinely pre-existing windows.
+  - id: this._drag
+    type: "{win, monitor, startX, startY, tiledSide, originReturned?} | null"
+    description: State of an in-progress window move-drag, set in _onGrabBegin and cleared in _onGrabEnd; null when no drag is active.
+  - id: this._dragPollId
+    type: "number | null"
+    description: GLib source id for the 33ms drag-poll timer driving _pollDrag; null when no drag is active.
+  - id: this._snapSide
+    type: "'left' | 'right' | 'maximize' | null"
+    description: The currently active snap zone during a drag, as last computed by _pollDrag; drives the preview widget and is read by _finalizeDrag to decide the drop outcome.
+  - id: this._resize
+    type: "{win, partner} | null"
+    description: State of an in-progress linked tile resize, set in _onGrabBegin and cleared in _onGrabEnd; null when no resize is active.
+  - id: this._preview
+    type: St.Widget
+    description: The reused snap-preview overlay widget (style_class 'tile-preview'), created in enable() and destroyed in disable().
+  - id: this._mutterSettings
+    type: Gio.Settings
+    description: Gio.Settings for org.gnome.mutter, used to temporarily disable Mutter's built-in edge-tiling for the extension's lifetime.
+  - id: this._savedEdgeTiling
+    type: boolean
+    description: The 'edge-tiling' value read from org.gnome.mutter before enable() overwrote it to false; restored verbatim in disable().
+  - id: this._mutterKbSettings
+    type: Gio.Settings
+    description: Gio.Settings for org.gnome.mutter.keybindings, used to clear and later restore GNOME's own tile-left/tile-right keybindings while the extension owns Super+Left/Super+Right.
+  - id: this._savedTileLeft
+    type: string[]
+    description: The original 'toggle-tiled-left' keybinding strv, saved before enable() clears it, restored in disable().
+  - id: this._savedTileRight
+    type: string[]
+    description: The original 'toggle-tiled-right' keybinding strv, saved before enable() clears it, restored in disable().
+  - id: this._rulesUI
+    type: WindowRulesUI
+    description: The single WindowRulesUI instance for this extension session, constructed in enable() and closed+nulled in disable(); see the rules-ui component.
+  - id: this._indicator
+    type: St.BoxLayout
+    description: The panel indicator container (style_class 'bwm-indicator'), inserted into Main.panel._leftBox in enable() and destroyed in disable(); fully rebuilt on every _updateIndicator call.
+  - id: this._indicatorTimer
+    type: "number | null"
+    description: GLib idle source id debouncing _updateIndicator rebuilds via _scheduleIndicatorUpdate; null when no rebuild is pending.
+  - id: this._logoBg
+    type: St.Bin
+    description: The indicator's logo background bin, reassigned on every _updateIndicator rebuild; toggled with the 'bwm-logo-active' style class when the overview is shown/hidden.
+  - id: this._wsDragTarget
+    type: "St.Button | null"
+    description: The indicator workspace button currently highlighted as the drop target during a workspace drag-to-reorder gesture; updated by _updateWsDragTarget, consumed and cleared by _commitWsDrop.
+functions:
+  - id: constructor
+    description: "Calls super(metadata). Initialises this._moveQueue and this._moveInFlight to their defaults. All other state is initialised in enable() so disable() can fully null it out."
+  - id: enable
+    description: |
+      Lifecycle entry point, called once per extension activation. In order:
+      1. this.initTranslations(); this._settings = this.getSettings().
+      2. Defines updateLog(), which sets the module-level LOG to a console.log wrapper (prefix '[BWM]') if the 'debug-logging' GSettings key is true, else a no-op; calls it once and connects it to 'changed::debug-logging'.
+      3. Initialises debounce/batch state: this._restackedTimer = null; this._pendingBatch = new Set(); this._batchTimer = null; this._currentBatch = null.
+      4. Initialises drag/resize state: this._drag = null; this._dragPollId = null; this._snapSide = null; this._resize = null.
+      5. Creates the snap preview widget — an St.Widget with style_class 'tile-preview' (reusing GNOME's own tile-preview CSS class for accent-colour theming), hidden, added to Main.layoutManager.uiGroup.
+      6. Disables GNOME's built-in edge-tiling: reads org.gnome.mutter 'edge-tiling' into this._savedEdgeTiling, then sets it false, so it cannot race with the extension's own tiling.
+      7. Overrides Super+Left/Super+Right: reads org.gnome.mutter.keybindings 'toggle-tiled-left'/'toggle-tiled-right' into this._savedTileLeft/this._savedTileRight, clears both to [], then registers 'tile-left'/'tile-right' keybindings via Main.wm.addKeybinding bound to this._settings, calling this._tileKeyboard('left'/'right'). Also registers 'open-rules-ui' calling this._rulesUI.toggle().
+      8. Constructs this._rulesUI = new WindowRulesUI(this).
+      9. Builds this._handles, an array of [object, signalId] pairs connecting: global.display 'window-created' → _onWindowCreated; 'grab-op-begin' → _onGrabBegin; 'grab-op-end' → _onGrabEnd; 'restacked' → _onRestacked; this._settings 'changed::debug-logging' → updateLog; global.workspace_manager 'active-workspace-changed' / 'workspace-added' / 'workspace-removed' / 'workspaces-reordered' → _scheduleIndicatorUpdate; Shell.WindowTracker 'tracked-windows-changed' → _scheduleIndicatorUpdate; Main.overview 'showing'/'hiding' → toggle the 'bwm-logo-active' style class on this._logoBg; global.workspace_manager 'active-workspace-changed' (second connection) → _onActiveWorkspaceChanged; global.workspace_manager 'workspace-added' → for the newly added workspace, connects its own 'window-removed' signal to defer-call _leaveIfEmpty(ws) unless the removed window has win._bwmMoving set, and pushes the [ws, sigId] pair onto this._wsHandles.
+      10. Separately, before that loop runs for future workspaces, iterates all currently existing workspaces and connects the same 'window-removed' → _leaveIfEmpty handler on each, building the initial this._wsHandles array.
+      11. Builds the panel indicator: hides Main.panel.statusArea['activities'] if present; creates this._indicator = new St.BoxLayout({style_class:'bwm-indicator'}); inserts it at index 0 of Main.panel._leftBox.
+      12. Calls this._scheduleIndicatorUpdate() and this._adoptExistingWindows().
+  - id: disable
+    description: |
+      Lifecycle teardown, mirrors enable() in reverse. Disconnects and clears this._handles (splice(0) then disconnect each pair). Removes this._dragPollId via GLib.source_remove if set, nulls it and this._drag. Removes this._batchTimer if set, nulls it; clears and nulls this._pendingBatch. Removes this._restackedTimer if set, nulls it. Removes this._indicatorTimer if set, nulls it. Calls this._rulesUI.close() then nulls it. Destroys this._indicator and nulls it; re-shows Main.panel.statusArea['activities'] if present. Destroys this._preview and nulls it. Restores org.gnome.mutter 'edge-tiling' to this._savedEdgeTiling, nulls the settings object. Removes the three custom keybindings via Main.wm.removeKeybinding; restores 'toggle-tiled-left'/'toggle-tiled-right' on org.gnome.mutter.keybindings from the saved arrays, nulls that settings object. Disconnects and nulls this._wsHandles (each disconnect wrapped in try/catch since a workspace may already be gone). Nulls this._settings last.
+  - id: _onActiveWorkspaceChanged
+    description: "Handler for global.workspace_manager 'active-workspace-changed', gated by the 'overview-on-last-workspace' GSettings boolean (returns immediately if false, or if Main.overview is already visible). Reads the active workspace index; if it is not the last workspace (index !== n_workspaces - 1), returns. Otherwise checks whether the active (last) workspace has any window that is not on-all-workspaces and passes _isRelevant; if it has none, calls Main.overview.show() — opens the overview automatically when the user lands on the trailing empty workspace."
+  - id: _scheduleIndicatorUpdate
+    description: "Debounces indicator rebuilds. If this._indicatorTimer is already set, does nothing. Otherwise schedules a GLib.idle_add at PRIORITY_DEFAULT_IDLE that clears the timer, calls this._updateIndicator(), and returns GLib.SOURCE_REMOVE. Called from every signal that can change the indicator's content (workspace add/remove/reorder, active-workspace-changed, tracked-windows-changed)."
+  - id: _updateIndicator
+    description: |
+      Rebuilds the entire panel indicator from scratch. Destroys all existing children of this._indicator. Reads n_workspaces, active index, and Shell.WindowTracker.get_default(). ICON size = 22.
+      Builds the logo button: an St.Button (style_class 'bwm-logo-btn', y-expand) containing an St.Bin (style_class 'bwm-logo-bg', stores as this._logoBg) wrapping an St.Icon loaded from `this.path + '/bwm_icon.svg'` via Gio.icon_new_for_string, icon_size 22, opacity 204 (≈80%). If Main.overview.visible, immediately adds the 'bwm-logo-active' style class. Connects enter-event/leave-event to toggle icon opacity between 255 and 204, and 'clicked' to Main.overview.toggle().
+      For each workspace index i: computes a per-window sort key winOrder (fullscreen=0, maximized=1, tiled-left=2, tiled-right=3, other=4) and filters/sorts that workspace's relevant, non-sticky, non-skip-pager windows whose get_workspace() === ws by that order. isLast = i is the final workspace AND it has zero windows. Skips rendering ws i entirely if it has zero windows and it is neither the last workspace nor the active workspace (unless n_workspaces === 1, the sole workspace is also skipped from this trailing-only rule but still subject to the next check); also skips if it has zero windows and n_workspaces === 1 (avoids showing a single empty button when there is nothing to manage).
+      For a rendered workspace: builds an St.Button (style_class 'bwm-ws', opacity 255 if active else 204) whose child is an St.Bin (style_class 'bwm-ws-bg'/'bwm-ws-bg bwm-ws-active') wrapping an St.BoxLayout (style_class 'bwm-ws-row') containing a number label `${i+1}` (style_class 'bwm-ws-num'). If isLast, appends a 'list-add-symbolic' St.Icon (style_class 'bwm-ws-plus') instead of window icons; otherwise appends one St.Icon per window (24px via app.create_icon_texture(22), style_class 'bwm-app-icon', desaturated via Clutter.DesaturateEffect factor 1.0 when not the active workspace), skipping windows whose Shell.WindowTracker app lookup fails. 'clicked' activates the workspace.
+      Drag-to-reorder: tags the button with _bwmWs = ws (unless isLast) and _bwmBg = bg, then connects 'button-press-event' (left button only) implementing a manual drag loop via a 'captured-event' connection on global.stage: on MOTION, waits until cursor has moved ≥6px from press point before starting the drag (creates a Clutter.Clone of bg positioned at its transformed position, dims the source bg to opacity 80, adds the clone to Main.layoutManager.uiGroup), then on every subsequent MOTION repositions the clone's x to follow the cursor and calls _updateWsDragTarget(cx, ws); on BUTTON_RELEASE disconnects the capture, and if a drag was active destroys the clone, restores bg opacity, and calls _commitWsDrop(ws, isLast); on KEY_PRESS Escape, disconnects the capture and if a drag was active destroys the clone, restores bg opacity, and clears any drag-target highlight without committing.
+      Every rendered button (and the logo button) is appended to this._indicator in order.
+  - id: _updateWsDragTarget
+    description: "Argument cx (pointer x in stage coordinates), srcWs (the workspace being dragged). Scans this._indicator's children for one whose _bwmWs is set and not equal to srcWs, and whose transformed x-range [ax, ax+width) contains cx; the first match (left to right) becomes `found` (or null). If found differs from the currently highlighted this._wsDragTarget, removes the 'bwm-ws-drag-over' style class from the old target's _bwmBg (if any), updates this._wsDragTarget, and adds the style class to the new target's _bwmBg (if any)."
+  - id: _commitWsDrop
+    description: "Arguments srcWs, activate (bool). Reads this._wsDragTarget, clears its highlight style class and resets this._wsDragTarget to null. If there was no target, returns without effect. Otherwise calls global.workspace_manager.reorder_workspace(srcWs, target._bwmWs.index()) to move srcWs to the target's position; if activate is true (i.e. the trailing '+' slot was the drop target), also activates srcWs."
+  - id: _applyWindowRules
+    description: "Argument win. Parses this._settings.get_string('window-rules') as JSON into `rules`; returns silently on parse failure or an empty array. Initialises win._bwmAppliedRules = new Set(), then calls _applyRule(win, rule) for every rule in order (later rules can override earlier ones' effects on the same field). Called (deferred) once per newly registered window from _registerWindow."
+  - id: _applyRuleToAll
+    description: "Argument rule (a single rule object, just saved via the rules UI). Iterates every workspace and every window on it; for each window that isTracked, calls _applyRule(win, rule) — applies a newly saved/edited rule retroactively to all currently open windows, not just future ones."
+  - id: _matchesRule
+    description: "Arguments win, rule. Reads rule.conditions as c. If c.class.enabled, tests new RegExp(c.class.regex) against win.get_wm_class() ?? '' — returns false on no match or on invalid regex (try/catch). If c.title.enabled, same test against win.get_title() ?? ''. If c.onAllWorkspaces.enabled and !win.is_on_all_workspaces(), returns false. If c.above.enabled and !win.above, returns false. If c.skipTaskbar.enabled and !win.skip_taskbar, returns false. If c.fullscreen.enabled and !win.fullscreen, returns false. If c.maximized.enabled and !(win.maximized_horizontally && win.maximized_vertically), returns false. Returns true only if every enabled condition matched (conditions are ANDed; condition.value is not consulted — only enabled gates a boolean property the window must currently have)."
+  - id: _applyRule
+    description: "Arguments win, rule. Returns immediately if !_matchesRule(win, rule). Reads rule.actions as a. If a.onAllWorkspaces.enabled, calls win.stick() if a.onAllWorkspaces.value else win.unstick(). If a.above.enabled, calls win.make_above() if a.above.value else win.unmake_above(). If a.openOnNewWorkspace.enabled, a.openOnNewWorkspace.value, and !win._bwmHandled (window has not yet been placed), sets win._bwmForceNewWs = rule.id for _handleNewWindow to consume later. If a.geometry.enabled, reads the window's current work area and computes absolute pixel x/y/w/h from the rule's percentage fields (x/y/w/h are 0–100, rounded), then calls win.move_resize_frame(true, x, y, w, h). Finally ensures win._bwmAppliedRules exists and adds rule.id to it, regardless of which actions fired (used by the rules UI to show which rules apply to a given window)."
+  - id: _isPrimary
+    description: "Argument mon (monitor index). Returns mon === Main.layoutManager.primaryIndex. Used to gate auto-workspace-creation behaviour (maximize/blocking-window handling) to the primary monitor only — secondary monitors never get new workspaces spawned for them."
+  - id: _adoptExistingWindows
+    description: "Called once at the end of enable(). Iterates every workspace and every window on it. Skips windows that fail _isRelevant or are already isTracked. For the rest: if win.get_maximized() === Meta.MaximizeFlags.BOTH, sets win._bwmState = 'maximized' and win._bwmPreMax = 'floating' (assumes a maximized pre-existing window's restore state is floating, since the real prior state is unknown). Otherwise sets win._bwmState = 'floating' and win._bwmFloatRect = this._toRect(win.get_frame_rect()) (captures current geometry as the float rect). Logs the adoption. This handles windows that already existed when the extension was enabled (or re-enabled after a shell restart) without moving or resizing them — they become tracked in place."
+  - id: _isRelevant
+    description: "Argument win. Returns true only if win.window_type === Meta.WindowType.NORMAL, !win.skip_taskbar, and !win.is_on_all_workspaces(). Used everywhere as the gate for 'is this a window the extension should manage at all' — dialogs, docks, sticky/on-all-workspaces windows, and taskbar-hidden windows are excluded from tiling, indicator listing, and the rules UI's window list."
+  - id: _defer
+    description: "Argument fn. Schedules fn to run on the next compositor idle via global.compositor.get_laters().add(Meta.LaterType.IDLE, ...), returning false from the wrapper so it runs once. Used pervasively to let Mutter finish processing the current operation (e.g. an unmaximize or a workspace change) before the extension reads back window/workspace state or performs a follow-up action — reading state synchronously inside a signal handler often sees stale values."
+  - id: _toRect
+    description: "Argument r (any object with x/y/width/height, typically a Meta.Rectangle from get_frame_rect()). Returns a plain {x, y, width, height} object — used to snapshot a Meta.Rectangle into a serializable plain object before storing it on win._bwmFloatRect, since the live Meta.Rectangle reference becomes stale."
+  - id: _centredRect
+    description: "Arguments wa (work area rect), wr, hr (width/height as fractions 0–1 of the work area). Computes w = round(wa.width * wr), h = round(wa.height * hr), and returns a rect centred within wa: {x: wa.x + round((wa.width - w)/2), y: wa.y + round((wa.height - h)/2), width: w, height: h}. Used to reconstruct a floating window's geometry from a saved wr/hr fraction pair when restoring on a possibly different-sized monitor."
+  - id: _captureAndSaveFloatGeom
+    description: "Argument win. No-op unless win._bwmState === 'floating'. Reads the current work area and frame rect; sets win._bwmFloatRect = this._toRect(fr); computes geom = {wr: fr.width/wa.width, hr: fr.height/wa.height} (size as a fraction of the work area, resolution-independent); parses this._settings 'float-sizes' as a JSON map (wm_class → geom), sets map[win.get_wm_class()] = geom, and writes it back via set_string (wrapped in try/catch, silently ignoring parse/write failures). Called ONLY from manual tile actions (_tileKeyboard and _finalizeDrag) — auto-tile paths must never overwrite the user's saved float size."
+  - id: _loadFloatGeom
+    description: "Argument wmClass. Parses this._settings 'float-sizes' as JSON and returns map[wmClass] ?? null; returns null on any parse error. Used by _registerWindow (to seed a newly opened window's float rect) and _doFloat/drag-detach (to restore a remembered size when no live _bwmFloatRect is available)."
+  - id: _getLayout
+    description: "Arguments workspace, monitor. Filters that workspace's windows to those on `monitor` and isTracked. Finds the 'blocker' — the first window with fullscreen true or _bwmState === 'maximized' (or null if none). Returns {left, right} where left is the first window with _bwmState === 'tiled-left' (falling back to the blocker if none), and right is the first window with _bwmState === 'tiled-right' (falling back to the blocker). A blocking window therefore occupies both slots simultaneously. This is the single source of truth for tile occupancy — it is never cached, always recomputed from live window state, so it cannot desync from reality."
+  - id: _onWindowCreated
+    description: "Handler for global.display 'window-created'. Returns if !_isRelevant(win) or already isTracked. Defines attach(), which waits for the window's compositor actor to exist, then connects the actor's 'first-frame' signal (disconnecting itself once fired) to call _registerWindow(win) — unless the window was already registered in the meantime via the grab-op-begin late-registration path. If win.get_compositor_private() already returns an actor, calls attach() immediately; otherwise waits for 'notify::compositor-private' on win first, then calls attach(). Waiting for first-frame (rather than registering immediately) ensures the window's true initial frame_rect is available."
+  - id: _registerWindow
+    description: |
+      Argument win. Logs the window's class, workspace index, monitor, maximized/fullscreen flags, and initial size. Initialises extension state on the window: win._bwmState = 'floating'; win._bwmPreMax = undefined; win._bwmFloatRect = undefined; win._bwmHandled = false; win._bwmAppliedRules = new Set(). Defers _applyWindowRules(win).
+      Seeds win._bwmFloatRect (only if !win.fullscreen): if _loadFloatGeom(win.get_wm_class()) returns a saved fraction pair, sets win._bwmFloatRect = _centredRect(currentWorkArea, saved.wr, saved.hr); else if the window is not currently maximized on both axes, sets win._bwmFloatRect = _toRect(its current frame rect); otherwise (opened already maximized with no saved geometry) leaves it undefined.
+      Connects per-window signals: 'unmanaged' → _onUnmanaged(win); 'workspace-changed' → _onWorkspaceChanged(win); 'notify::maximized-horizontally' and 'notify::maximized-vertically' → _onMaximizeChange(win); 'notify::fullscreen' → _onMaximizeChange(win).
+      Adds win to this._pendingBatch and calls _scheduleBatch().
+  - id: _scheduleBatch
+    description: "If this._batchTimer is already set, does nothing (a flush is already pending). Otherwise schedules a GLib.timeout_add at PRIORITY_DEFAULT, 150ms, that clears the timer and calls _flushBatch(), returning GLib.SOURCE_REMOVE. The 150ms window lets multiple windows that open near-simultaneously (e.g. a browser restoring its session) all register before any of them is placed."
+  - id: _flushBatch
+    description: "Snapshots this._pendingBatch into a `wins` array and clears the Set. Sets this._currentBatch = new Set(wins) so _handleNewWindow can tell, while processing this batch, which other windows are part of the same batch (used by the hasExistingOther check in _handleNewWindow to ignore not-yet-placed batch siblings). Calls _handleNewWindow(win) for every win in the batch that is still isTracked (a window could have been closed before the timer fired). Resets this._currentBatch to null when done."
+  - id: _onUnmanaged
+    description: "Handler for a tracked window's 'unmanaged' signal (window closed/destroyed). No-op if !isTracked(win). Computes freedSide from win._bwmState ('left'/'right'/null), freedWs from win._bwmTiledWs ?? win.get_workspace(), freedMon from win._bwmTiledMon ?? win.get_monitor() (the _bwmTiled* fields are used preferentially because get_workspace()/get_monitor() can be unreliable once a window starts unmanaging). Deletes every _bwm* property from win, clearing all extension state. Removes win from this._pendingBatch if present. If freedSide, freedWs, and freedMon >= 0 are all valid, defers a call to _tryReturnOrigin(freedWs, freedSide, freedMon) — gives any window that was displaced from that exact slot a chance to move back."
+  - id: _leaveIfEmpty
+    description: "Argument ws. No-op if this._settings is null (mid-disable). Reads the 'on-empty-workspace' GSettings string; returns immediately if it is 'nothing'. Returns if ws.index() < 0 (workspace already removed) or if the active workspace is not ws (user already navigated away). Checks whether ws still has any relevant, non-sticky window; returns if it does. If action === 'overview', shows Main.overview if not already visible, and returns. Otherwise (action === 'prev'): targets the workspace at index-1; if there is none (this was the leftmost workspace), instead tries index+1 but only activates it if that workspace itself has windows (otherwise does nothing, to avoid hopping to another empty workspace); activates the resolved target workspace. Connected (via enable()'s per-workspace 'window-removed' handler, deferred) whenever a workspace's window count could have dropped to zero, except when the removal was extension-initiated (win._bwmMoving)."
+  - id: _onWorkspaceChanged
+    description: "Handler for a tracked window's 'workspace-changed' signal. No-op if !isTracked(win). Reads the new workspace; returns if null (window is being unmanaged). This signal fires both for genuine user-initiated moves and for index shifts caused by other workspaces being added/removed — _bwmState itself is never touched here either way. If win._bwmMoving is set, returns — the system-initiated move's caller is already handling placement. Otherwise treats this as a user-initiated move: raises the window, sets win._bwmJustMoved = true. Computes prevSide from the OLD tiled state ('left'/'right'/null), oldWs from win._bwmTiledWs, prevMon from the window's current monitor; deletes win._bwmOrigin (the user chose a new home, so any pending auto-return is cancelled). If the window had a previous tiled side, an old workspace different from the new one, and a valid monitor, defers _tryReturnOrigin(oldWs, prevSide, prevMon) to free up the vacated slot for any displaced window waiting on it. Always defers _tileIntoFreeSlot(win) to re-place the window into a free slot on its new workspace if its state calls for tiling."
+  - id: _onMaximizeChange
+    description: |
+      Handler for a tracked window's notify::maximized-horizontally / notify::maximized-vertically / notify::fullscreen signals. No-op if !isTracked(win). Computes full = win.fullscreen || (win.maximized_horizontally && win.maximized_vertically).
+      State-based dedup: if full === (win._bwmState === 'maximized'), returns immediately — this both collapses the double-fire of the two maximized-* signals for one user action, and suppresses the notify the extension's own maximize()/unmaximize() calls trigger internally (since the extension always sets _bwmState to its target value before calling the Mutter API).
+      If full is true: sets win._bwmPreMax = win._bwmState (the state to restore to later), then win._bwmState = 'maximized' (set before any async work so re-entrant notifies are suppressed by the guard above). If the window has a workspace, is on the primary monitor, and _hasOtherWindows(ws, mon, win) is true, sets win._bwmOrigin = {ws} (only if not already set) and defers _moveToNewWorkspace(win) — a window the user maximized on a non-empty workspace gets its own workspace.
+      If full is false: delegates to _onUnmaximized(win).
+  - id: _onUnmaximized
+    description: |
+      Argument win. Reads prev = win._bwmPreMax ?? 'floating', clears win._bwmPreMax.
+      If a drag of this exact window is in progress (this._drag?.win === win) — Mutter auto-unmaximizes on drag start — sets win._bwmState = 'floating' and returns without scheduling any restore; _finalizeDrag owns the final state once the drag ends.
+      Otherwise, if win had an _bwmOrigin workspace: deletes win._bwmOrigin first (consumed regardless of outcome). If that origin workspace has no fullscreen window on the current monitor: computes its layout via _getLayout and picks targetSide as 'left' if prev was 'tiled-left' and the origin's left slot is free, or 'right' similarly; if a targetSide was found, sets win._bwmMoving = true and win._bwmState = `tiled-${targetSide}` (both before the workspace change, to suppress re-entrant notifies), calls win.change_workspace(originWs), activates originWs, and defers clearing _bwmMoving and calling _tileWindow(win, targetSide) if still tracked — then returns. Else if prev was 'floating' and the window is not already on the origin workspace, sets win._bwmState = 'floating', win._bwmMoving = true, moves to and activates originWs, and defers clearing _bwmMoving and calling _doFloat(win) if still tracked — then returns.
+      Default path (no origin, or origin had a fullscreen window, or no free matching slot there): if prev was a tiled state, reads the current workspace's layout; if the matching slot is free or occupied by win itself, sets win._bwmState = `tiled-${side}` immediately (suppresses a second notify) and defers _tileWindow(win, side) if still tracked; if the slot is taken by another window, falls back to win._bwmState = 'floating' and defers _doFloat(win) if still tracked. If prev was not a tiled state, sets win._bwmState = 'floating' and defers _doFloat(win) if still tracked.
+  - id: _onGrabBegin
+    description: |
+      Handler for global.display 'grab-op-begin', arguments win, op. Late-registration: if win exists, is not yet isTracked, and passes _isRelevant — this is the Chrome-tab-detach case where no window-created/map signal ever fired — sets up the same initial state and per-window signal connections as the start of _registerWindow (_bwmState='floating', _bwmPreMax/_bwmFloatRect=undefined, _bwmHandled=false, plus the five signal connections), but does NOT defer _applyWindowRules or add it to the batch (it is being grabbed right now, not freshly opened).
+      Returns if there is no win or it is still not tracked.
+      If op === Meta.GrabOp.MOVING: this is drag start. Captures the pointer position and sets this._drag = {win, monitor: win.get_monitor(), startX, startY, tiledSide: null} BEFORE any window operation that might trigger notify::maximized-* (so the _drag-aware guard in _onUnmaximized is already active when Mutter's implicit unmaximize-on-drag fires). If win was tiled-left/tiled-right, records this._drag.tiledSide accordingly (drag will lazy-detach the tile once the movement threshold is crossed). Starts a 33ms GLib.timeout_add (PRIORITY_DEFAULT) that calls _pollDrag() each tick while this._drag is set, then returns.
+      Otherwise (a resize grab): ignored unless win._bwmState starts with 'tiled'. Reads the workspace and current layout; finds `partner` as the window on the opposite tile slot; ignored unless the partner is also in a tiled state. Sets this._resize = {win, partner} so _finalizeResize can resize the partner to match once the resize completes.
+  - id: _onGrabEnd
+    description: "Handler for global.display 'grab-op-end', arguments win, _op. If this._drag?.win === win: removes the drag poll timeout, clears this._dragPollId, calls _finalizeDrag(win), then clears this._drag, hides the snap preview, and clears this._snapSide. If this._resize?.win === win: calls _finalizeResize() then clears this._resize."
+  - id: _pollDrag
+    description: |
+      Polls the current pointer position on every drag tick (33ms, started by _onGrabBegin). No-op if this._drag is unset. Reads global.get_pointer(); determines which monitor in Main.layoutManager.monitors currently contains the pointer and updates this._drag.monitor.
+      Computes dist as the Euclidean distance from the drag start point. If dist >= DRAG_THRESHOLD (20px):
+        - Lazy tile detach: if this._drag.tiledSide is set, and the window is still in that tiled state, sets win._bwmState = 'floating' and — if a saved float-size fraction exists for its wm_class — immediately resizes it (move_resize_frame, keeping current position) to that fraction of the current monitor's work area. Captures detachedSide and the window's workspace/monitor, clears this._drag.tiledSide to null, and if the workspace/monitor are valid, defers _tryReturnOrigin(ws, detachedSide, mon) to let a displaced sibling reclaim the vacated slot. Then calls _floatReturnToOrigin(win, ws, mon) — if this floating window itself had a pending origin return, it executes it now (it has just become a 'real' floater again).
+        - Else if this is a plain floating-window drag and this._drag.originReturned is not yet set: marks it set, then likewise calls _floatReturnToOrigin(win, win's workspace, this._drag.monitor) once.
+        Snap-zone detection (only evaluated once past the threshold): cx <= work-area-left + SNAP_PX → 'left'; cx >= work-area-right - SNAP_PX → 'right'; cy <= work-area-top + SNAP_PX → 'maximize' (top-edge only; no bottom-edge snap).
+      If the computed snap differs from this._snapSide, updates this._snapSide and either shows the preview for that side/work-area or hides it.
+  - id: _showPreview
+    description: "Arguments side ('left'/'right'/'maximize'), wa (work area). half = floor(wa.width/2). Looks up [x,y,w,h] from a small map: left = [wa.x, wa.y, half, wa.height]; right = [wa.x+half, wa.y, wa.width-half, wa.height]; maximize = [wa.x, wa.y, wa.width, wa.height]. Positions and sizes this._preview accordingly and shows it."
+  - id: _hidePreview
+    description: "Hides this._preview. Called when the drag moves out of any snap zone, and on grab-end."
+  - id: _finalizeDrag
+    description: "Argument win, called from _onGrabEnd at the end of a move drag. No-op if !isTracked(win). If this._snapSide is unset (drag ended without crossing into a snap zone), logs and returns — window stays wherever the user dropped it (Mutter's own move already applied). If this._snapSide === 'maximize', calls _doMaximize(win). Otherwise calls _captureAndSaveFloatGeom(win) (persists the float size the user just demonstrated, since this is a manual action) then _tileWindow(win, this._snapSide)."
+  - id: _finalizeResize
+    description: "Called from _onGrabEnd at the end of a resize grab. Destructures {win, partner} from this._resize; no-op if !isTracked(win). Reads win's work area and current frame rect. If win is tiled-left, computes the partner's new x = win's right edge, and width = remaining space to the work-area's right edge; if tiled-right, partner's x = work-area left edge, width = win's left edge minus work-area left edge. If the resulting partner width would be < 50px, logs and skips (refuses to shrink the partner unreasonably). Otherwise resizes the partner via move_resize_frame — a linked resize so the two tiles always exactly fill the work area between them."
+  - id: _tileWindow
+    description: |
+      Arguments win, side, overrideW (default null — a custom tile width override, used to make tiles span any remaining space rather than a flat half). No-op if !isTracked(win) or the window has no workspace. Reads the work area, current layout, and `other` (the opposite side). Records win._bwmTiledWs and win._bwmTiledMon (so later code, including at unmanaged time, can find the right workspace/monitor without relying on possibly-stale get_workspace()/get_monitor()).
+      Computes `occupant` as the window currently in the target side's slot, if any and not win itself.
+      If there is an occupant:
+        - If the OTHER side is also occupied (by a window that isn't win): if the occupant is itself a blocker (fullscreen or maximized), it occupies both slots — rather than displacing a blocker, sets win._bwmOrigin = {ws} (if not already set) and calls _moveToNewWorkspace(win, side, 'right') to give win its own new workspace, then returns. Otherwise both sides hold ordinary tiles: calls _displaceTile(occupant, side, mon) to evict the target-side occupant to another workspace; if overrideW was not given, re-reads the layout after the displacement and, if a partner remains on the other side, computes overrideW = work-area width minus the partner's current width (so win fills exactly the freed space).
+        - Else (other side is free): swaps the occupant to the other side — sets occupant._bwmState = tiled-other and calls _doTile(occupant, other, wa, occupantW) using its own current width as overrideW (preserves its size), then sets overrideW = work-area width minus that width for win.
+      Else if overrideW was not given and the other side has a partner (not win), computes overrideW = work-area width minus the partner's current width — win fills the space the partner isn't using.
+      Finally sets win._bwmState = tiled-side BEFORE calling _doTile (so the geometry-apply guard inside _doTile, and any notify::maximized-* fired by the unmaximize-on-tile inside it, see the correct tiled state already), then calls _doTile(win, side, wa, overrideW).
+  - id: _doTile
+    description: |
+      Raw geometry tile, no state or layout updates. Arguments win, side, wa (default null, computed if absent), overrideW (default null). half = floor(wa.width/2); w = overrideW if given else (half for left, wa.width-half for right); x = wa.x for left, wa.x+wa.width-w for right.
+      hadState = whether the window is currently fullscreen or maximized on either axis (i.e. needs an explicit unmaximize/unfullscreen transition before the move will take effect).
+      Defines applyGeometry(): no-op if !isTracked(win) or win._bwmState no longer starts with tiled (state may have changed during an async gap); otherwise calls win.move_frame(true, x, wa.y) then win.move_resize_frame(true, x, wa.y, w, wa.height) — a two-call pattern because some apps only resize, not move, on a single combined move_resize_frame call.
+      If hadState: reads actor = win.get_compositor_private(); only if actor is truthy (it can be null/undefined, e.g. very early in a window's lifecycle), best-effort calls Main.wm._prepareAnimationInfo(global.window_manager, actor, win.get_frame_rect().copy(), Meta.SizeChange.UNMAXIMIZE) so Mutter animates this as an unmaximize transition (wrapped in try/catch, private API). Calls win.unmake_fullscreen() if fullscreen, win.unmaximize() if maximized on either axis (the resulting notify::maximized-* is suppressed by _onMaximizeChange's state guard, since win._bwmState was already set to tiled-* by the caller before _doTile ran). Calls applyGeometry() once immediately. Then connects a one-shot size-changed handler that disconnects itself and re-calls applyGeometry() if the window is still tracked and tiled — this is the Chrome-async-geometry fix: some apps restore their pre-maximize position asynchronously after the first applyGeometry() call, so geometry is re-applied once they settle. A 2000ms GLib.timeout_add safety net disconnects that handler if size-changed never fires, preventing a leaked connection.
+      If not hadState: calls applyGeometry() once, synchronously, with no follow-up.
+  - id: _doMaximize
+    description: "Argument win. No-op if !isTracked(win). Returns immediately if win._bwmState is already 'maximized' (prevents corrupting the saved preMaxState by re-entering). If currently floating, captures win._bwmFloatRect = _toRect(current frame rect) first. Sets win._bwmPreMax = win._bwmState (the state to restore to later), then win._bwmState = 'maximized' BEFORE calling win.maximize() (so the resulting notify::maximized-* is suppressed by the guard in _onMaximizeChange). Calls win.maximize(). If the window has a workspace, is on the primary monitor, and _hasOtherWindows(ws, mon, win) is true, sets win._bwmOrigin = {ws} (if not already set) and defers _moveToNewWorkspace(win) — mirrors the auto-new-workspace behaviour for maximize triggered programmatically (e.g. drag-to-top-edge) as for user-driven maximize via _onMaximizeChange."
+  - id: _doFloat
+    description: |
+      Argument win. No-op if !isTracked(win). Sets win._bwmState = 'floating'. Reads the current work area and any saved float-size fraction for the window's wm_class.
+      If win._bwmFloatRect is already set (a known prior floating geometry), applies it directly via move_frame then move_resize_frame.
+      Else if a saved fraction exists, computes a centred rect via _centredRect(wa, saved.wr, saved.hr), stores it as win._bwmFloatRect, and applies it the same way.
+      Else (no known geometry at all): connects a one-shot size-changed handler that, once the window reports its natural post-unmaximize size, computes a centred rect from that size's wr/hr fraction of the (re-read, possibly-changed) work area, stores it as win._bwmFloatRect, and applies it — used the first time a window that was opened already maximized, with nothing saved, gets untiled/unmaximized: it gets centred at its own natural size rather than snapping to an arbitrary default.
+  - id: _tileIntoFreeSlot
+    description: "Argument win, called when the user manually moves a tracked window to a different workspace (via _onWorkspaceChanged, deferred). No-op if !isTracked(win), or if this is the same window currently being dragged (drag logic owns placement in that case). Reads the new workspace's layout. If win is already correctly placed (its _bwmState matches the slot it's actually sitting in per the layout), returns — nothing to do. If both slots are free, tiles into whichever side win's previous _bwmState indicated (left or right) — preserves the side the user is used to. If only the left is taken, tiles into right; if only the right is taken, tiles into left. If both are taken, falls back to win._bwmState = 'floating' (cannot tile, both slots occupied by other windows)."
+  - id: _handleNewWindow
+    description: |
+      Argument win, called from _flushBatch for each window in a settled batch. No-op if !isTracked(win). Sets win._bwmHandled = true.
+      If win._bwmForceNewWs is set (a window-rule requested a dedicated workspace): clears the flag, and if the window is on the primary monitor, calls _moveToRuleWorkspace(win, ruleId); returns either way (this path bypasses all the normal placement heuristics below).
+      Otherwise: reads the workspace (returns if none) and monitor, and the current layout.
+      Computes winIsBlocking = win.fullscreen || (maximized on both axes) || win._bwmState === 'maximized'.
+      Computes hasExistingOther by scanning every other window on the same workspace: skips win itself, untracked windows, windows on a different monitor, and sticky (is_on_all_workspaces) windows; additionally, if win itself is not blocking, also skips windows that are part of the current batch (this._currentBatch) but not yet _bwmHandled (siblings opening in the same 150ms window that haven't been placed yet don't count as 'existing' — prevents two simultaneously-opening windows from both trying to claim the same slot/trigger redundant workspace creation). The first window that survives all these checks sets hasExistingOther = true and stops the scan.
+      Computes slotsUsed = count of occupied left/right slots (0, 1, or 2) from the layout.
+      If winIsBlocking AND (hasExistingOther OR slotsUsed >= 1) AND the window is on the primary monitor: sets win._bwmOrigin = {ws} (if not already set) and calls _moveToNewWorkspace(win) (defaults to inserting to the right and tiling nothing), then returns — a newly opened blocking window never shares a workspace with anything.
+      Otherwise calls _restoreInitialState(win) — the window is small/normal-sized or this is its own (now-empty-of-others) workspace, so it gets the size-based placement heuristic instead.
+  - id: _hasOtherWindows
+    description: "Arguments ws, mon, excludeWin. Returns true if any window on ws other than excludeWin is isTracked and on monitor mon (returns on the first match). Used by both _doMaximize and _onMaximizeChange to decide whether maximizing should also spawn a new workspace (only if there is something else there to get out of the way of)."
+  - id: _tileKeyboard
+    description: "Argument side ('left'/'right'), the handler bound to the 'tile-left'/'tile-right' keybindings (Super+Left/Super+Right). Reads the currently focused window via global.display.get_focus_window(); no-op if none or not tracked. If the window is already tiled on that exact side (pressing the same direction again = untile): sets win._bwmState = 'floating' and calls _doFloat(win); if the workspace/monitor are valid, defers _tryReturnOrigin(ws, side, mon) to let a displaced sibling reclaim the slot; also calls _floatReturnToOrigin(win, ws, mon) directly (not deferred) in case this now-floating window itself has a pending origin to return to. Otherwise (not tiled on that side, or floating/tiled-other/maximized): calls _captureAndSaveFloatGeom(win) first (this is a manual action, so the current float geometry — if any — is worth remembering) then _tileWindow(win, side)."
+  - id: _restoreInitialState
+    description: |
+      Argument win, called for a freshly placed window that isn't an auto-new-workspace blocking case. Sets win._bwmHandled = true. Computes wr/hr as the window's current frame width/height as fractions of its work area.
+      If wr > 0.9 and hr > 0.9 (essentially full-work-area already): treats it like a maximize — sets win._bwmOrigin = {ws: current workspace}, win._bwmPreMax = win._bwmState, win._bwmState = 'maximized' (pre-set so _doMaximize's already-maximized guard fires harmlessly and the just-captured _bwmFloatRect, if any, is preserved rather than being overwritten), then calls _doMaximize(win).
+      Else if hr > 0.9 and wr is between 0.2 and 0.8 inclusive (tall, moderate-width — a typical snapped shape): computes customW = min(current width, 80% of work-area width) and a preferred side based on which half of the work area the window's centre x falls in. Reads the current layout; other is the opposite of preferred. side = preferred if its slot is free, else other if that slot is free, else null. If a side was found: tiles win there via _tileWindow(win, side, overrideW), passing overrideW = customW only if the OTHER side is currently empty (if there's already a partner there, lets _tileWindow compute the complementary width instead of forcing customW). If no side was found (both occupied): sets win._bwmOrigin = {ws} and calls _moveToNewWorkspace(win, preferred) — passes the preferred side so the move logic can reuse an existing workspace that already has a matching free slot rather than always creating a brand new one.
+      Otherwise (neither condition matched, a small/normal window): leaves it floating, no action taken (it keeps the win._bwmState = 'floating' set by _registerWindow/_adoptExistingWindows)."
+  - id: _onRestacked
+    description: "Handler for global.display 'restacked', which fires very frequently. Debounces via this._restackedTimer: if already set, returns; otherwise schedules an 80ms GLib.timeout_add (PRIORITY_DEFAULT) that clears the timer and then, for every workspace, builds per-monitor sets of 'covering' windows (tracked and fullscreen, maximized, or tiled) and 'floating' windows (tracked and _bwmState === 'floating') in one pass over that workspace's window list. For every (workspace, monitor) pair that has at least one covering AND at least one floating window, and has not already been checked this tick (deduped via a `${wsIndex}:${monitor}` key Set), calls _checkCoveredFloaters(ws, mon). Skips pairs with no covering windows entirely (nothing can be covering a floater there)."
+  - id: _checkCoveredFloaters
+    description: |
+      Arguments ws, mon. Builds coveringWins = that workspace's tracked windows on mon that are fullscreen, maximized, or tiled; returns immediately if there are none. Reads the work area from the first covering window. Builds allWins = every window on ws:mon that isn't sticky, sorts them by z-order via global.display.sort_windows_by_stacking, and computes freeArea via _getFreeArea(ws, mon, wa).
+      Builds coveredFloaters by scanning every tracked window on ws:mon with _bwmState === 'floating', skipping ones that are above, sticky, or have _bwmJustMoved set (consuming that flag — checked once then cleared) or _bwmMoving set, and skipping ones whose get_transient_for() is itself a tracked window on the same workspace (a dialog's coverage is governed by its parent, not checked independently). For each survivor, finds its z-index in the sorted stack (skips if not found) and calls _isFullyCovered(floatRect, coveringWins, floatIdx, sorted, wa); if covered, adds it to coveredFloaters.
+      Returns if coveredFloaters is empty. Otherwise, for each covered floater in order, tries _tryRelocateOnSameWs(floatWin, freeArea) first, then _tryRelocateOnPrevWs(floatWin, ws, mon) if that failed; any that neither succeeded are collected into needNewWs. If needNewWs is non-empty, calls _moveBatchToNewWorkspace(needNewWs) once for all of them together (so they land on the same new workspace rather than each spawning its own).
+  - id: _isFullyCovered
+    description: "Arguments floatRect, coveringWins, floatZ (the floater's z-index in `sorted`), sorted (full z-order array), wa (work area). Clips floatRect to the visible work-area bounds; if the clipped rect is empty (entirely off-screen), returns true (an off-screen floater counts as covered — it should be relocated). Otherwise, for every covering window whose z-index (looked up in `sorted`) is greater than floatZ (i.e. stacked above the floater) and whose vertical extent overlaps the floater's, adds its horizontal [left, right) interval to a list; covering windows below the floater in z-order are ignored even if they geometrically overlap. If no qualifying intervals were found, returns false (nothing above it). Sorts the intervals by left edge and sweeps left to right accumulating coverage: if a gap is found (next interval starts after the current coverage frontier), returns false; once the accumulated coverage reaches or passes the floater's right edge, returns true. This is a 1D horizontal interval-coverage sweep restricted to vertically-overlapping covering windows — it approximates 2D coverage without full polygon math, sufficient because covering windows in this extension are always full-height tiles/maximized/fullscreen on their monitor."
+  - id: _getFreeArea
+    description: "Arguments ws, mon, wa. Returns null if any tracked window on ws:mon is fullscreen or maximized (a blocker occupies the whole work area — no meaningful 'free area' concept applies; the caller's relocation attempt should fail over to a new workspace). Reads the tile layout; returns null if both left and right are occupied (no free tile slot either). If only left is occupied, returns the area to the right of it: {x: leftWin.right, y: wa.y, width: workAreaRight - leftWin.right, height: wa.height}. If only right is occupied, returns the area to its left similarly. If neither is occupied, returns the full work area {x: wa.x, y: wa.y, width: wa.width, height: wa.height}."
+  - id: _tryRelocateOnSameWs
+    description: "Arguments floatWin, freeArea. Returns false if freeArea is null or narrower than 50px, or if the floater's current width exceeds freeArea's width (doesn't fit). Otherwise computes a horizontally-centred x within freeArea for the floater's current width, clamped to stay within freeArea's bounds, and moves the floater there via move_frame (position only — no resize, no workspace change). Returns true on success."
+  - id: _tryRelocateOnPrevWs
+    description: "Arguments floatWin, ws, mon. Returns false if ws.index() <= 0 (no previous workspace exists) or if the previous workspace has no windows on `mon` (work area cannot be determined from an empty workspace, so it's skipped rather than guessed). Reads the work area from the previous workspace's first window on that monitor, computes its free area via _getFreeArea, and returns false if that free area is null or narrower than 50px, or if the floater doesn't fit within it. Otherwise computes a centred, clamped x as in _tryRelocateOnSameWs, sets floatWin._bwmMoving = true, calls change_workspace_by_index to move it to the previous workspace (without activating it — the relocation happens silently in the background), and defers clearing _bwmMoving and applying the computed x position (re-checking isTracked first, since the deferred callback runs after the synchronous workspace change). Returns true."
+  - id: _floatReturnToOrigin
+    description: "Arguments win, ws, mon. If win has a _bwmOrigin workspace, consumes it (deletes win._bwmOrigin regardless of outcome). Returns if there was no origin, or if the origin IS the current workspace (already home), or if _hasOtherWindows(ws, mon, win) is true (not alone — moving back now would be disruptive to whatever the user is doing on this workspace), or if the origin workspace has a fullscreen window on this monitor (would conflict). Otherwise sets win._bwmMoving = true, calls win.change_workspace(originWs), activates originWs, and defers clearing _bwmMoving. This is the 'this floater drifted to a new workspace as a displaced tile or via covered-floater relocation, but now finds itself alone on a workspace that isn't its real home — send it back' path, called from _pollDrag (drag start) and _tileKeyboard (untile)."
+  - id: _tryReturnOrigin
+    description: |
+      Arguments ws, side, mon, wrapped entirely in try/catch (logs and swallows any exception — this runs from several deferred call sites and must never throw uncaught). Returns early if ws is null or ws.index() < 0 (workspace gone). Reads the current layout for ws:mon; returns early if the target side is already occupied.
+      Searches all currently-managed windows (via global.get_window_actors().map(a => a.meta_window)) for one that is tracked, has _bwmOrigin pointing at exactly this ws and side, and is on monitor mon. Returns early if no such candidate exists.
+      Companion check: reads the candidate's current workspace and layout there; `companion` is whatever occupies the opposite side. If a companion exists and it does NOT itself have a pending _bwmOrigin (i.e. it's a window that was deliberately placed there, not another displaced tile), returns early without moving the candidate — avoids ripping a legitimately-placed companion's partner away.
+      Otherwise: consumes the candidate's _bwmOrigin (saved into a local `origin` first), sets candidate._bwmMoving = true and candidate._bwmState = `tiled-${side}`, calls change_workspace(ws) and activates ws. Defers: clears _bwmMoving; if still tracked, calls _doTile(candidate, side, its current work area, null) to apply geometry; then recursively calls _tryReturnOrigin(origin.ws, otherSide, mon) — if the candidate itself had a companion that was ALSO displaced from the same original workspace's opposite slot, this chains the return so both windows eventually make it back together, slot by slot.
+  - id: _displaceTile
+    description: |
+      Arguments occupant, side (mon is read from the occupant directly — the third parameter in the call sites is unused/redundant with occupant.get_monitor()). No-op if !isTracked(occupant). Reads occupant's current workspace as srcWs and monitor as mon; origin = {ws: srcWs, side}.
+      Searches for an existing absorbing workspace: iterates workspace indices from srcIdx-1 down to 0 (i.e. scans leftward from the source). For each candidate workspace: reads its layout; the target side is eligible if it's free, or (if not) the opposite side is free instead (preferredFree/otherFree → slotFree). If neither is free, skips to the next index. Then checks that EVERY currently-tiled window on that candidate workspace:monitor was itself displaced from srcWs (compares w._bwmOrigin?.ws === srcWs for each) AND that there is at least one such tile (a workspace with zero tiles doesn't count as a valid 'absorbing' target via this path — that case is handled by the new-workspace fallback below, which would just create a workspace anyway) — this prevents merging a displaced tile onto a workspace that has independently, deliberately placed tiles. The first workspace satisfying both conditions becomes targetWs.
+      If targetWs was found: re-reads its layout to pick landSide (target side if free, else the opposite); sets occupant._bwmOrigin = origin, occupant._bwmMoving = true, occupant._bwmState = `tiled-${landSide}`, calls change_workspace(targetWs); defers clearing _bwmMoving and, if still tracked, calling _doTile(occupant, landSide, its work area, null) to apply geometry.
+      If no targetWs was found: sets occupant._bwmOrigin = origin and calls _moveToNewWorkspace(occupant, side, 'left') — creates a fresh workspace to the LEFT of the source (distinguishing displaced tiles, which go left, from newly-opened/maximized windows, which go right) and tiles the occupant there on its original side.
+  - id: _moveBatchToNewWorkspace
+    description: "Argument wins (array). No-op if empty. Reads the active workspace index as newIdx (insertion point — LEFT of the current/active workspace, unlike most other new-workspace creation which goes right). Appends a new workspace at the end via append_new_workspace, then reorders it to newIdx via reorder_workspace. For every window in wins that is still tracked, sets win._bwmMoving = true and calls change_workspace_by_index(newIdx, false) (the `false` argument means do not auto-activate per-call). Does NOT activate the new workspace at all — covered floaters are relocated silently in the background without yanking the user's view away. Defers clearing _bwmMoving on all the windows."
+  - id: _moveToRuleWorkspace
+    description: "Arguments win, ruleId, called when a window-rule's openOnNewWorkspace action fires for a newly placed window. First, scans every workspace for any OTHER window whose _bwmAppliedRules already contains ruleId; if found, moves win there (change_workspace, activating it only if it isn't already the active workspace) and returns — groups all windows matching the same rule onto one shared workspace rather than giving each its own. If none found and the window's current workspace has no OTHER tracked, non-sticky window on it, stays put (the current workspace is already effectively dedicated) and returns. Otherwise calls _moveToNewWorkspace(win) (defaults: insert to the right, no tile-on-arrival) to create a fresh workspace for this rule's first window."
+  - id: _moveToNewWorkspace
+    description: "Arguments win, tileOnArrive (default null — a side to tile into once the destination workspace is decided), direction (default 'right', or 'left'). Thin serialization wrapper: if this._moveInFlight is true (another move is already executing), pushes {win, tileOnArrive, direction} onto this._moveQueue and returns — queued moves run later via _finishMove. Otherwise sets this._moveInFlight = true and immediately calls _doMoveToNewWorkspace(win, tileOnArrive, direction). This serialization exists because simultaneous workspace creation/reordering from concurrent calls corrupts workspace indices in Mutter."
+  - id: _doMoveToNewWorkspace
+    description: |
+      Arguments win, tileOnArrive (default null), direction (default 'right'). If win.is_on_all_workspaces() (sticky), logs and skips entirely, calling _finishMove(win) immediately (a sticky window doesn't need to move workspaces at all).
+      Reads the active workspace index, the window's current (old) workspace, and its monitor.
+      If tileOnArrive was requested AND direction is 'right' (never applies for left-moving displacement, which always wants a genuinely fresh workspace): tries to REUSE an existing workspace first rather than always creating a new one — checks [currentIdx, currentIdx+1] in order (stopping if an index would exceed the workspace count); for each, reads its layout and computes a freeSide (tileOnArrive's slot if free, else the opposite if that's free, else null — skip this index if neither). On the first workspace with a free matching slot: sets win._bwmMoving = true, moves win there via change_workspace, activates it, and defers clearing _bwmMoving, tiling via _tileWindow(win, freeSide) if still tracked, and calling _finishMove(win) — then returns, skipping the new-workspace-creation path entirely.
+      If no existing workspace could be reused (or reuse wasn't applicable): creates a new workspace via append_new_workspace, computes newIdx = currentIdx for direction 'left' or currentIdx+1 otherwise, and reorders the newly appended workspace to newIdx via reorder_workspace. Sets win._bwmMoving = true and moves win there via change_workspace_by_index(newIdx, false).
+      If direction is not 'left': activates the new workspace UNLESS the old workspace has another fullscreen window on the same monitor (don't yank the view away from an active fullscreen window elsewhere). For direction 'left', the new workspace is never activated (used for silent displacement).
+      Defers: clears win._bwmMoving; if still tracked: if tileOnArrive was given, calls _tileWindow(win, tileOnArrive); else if the window arrived already fullscreen/maximized-on-both-axes, just confirms win._bwmState = 'maximized' without calling _doMaximize (which would clobber the already-correct saved preMaxState); else calls _restoreInitialState(win) to apply the normal size-based placement heuristic on the new workspace. Finally calls _finishMove(win) in all cases.
+  - id: _finishMove
+    description: "Argument _win (unused — the parameter exists for call-site symmetry but the function only inspects the queue). Sets this._moveInFlight = false. If this._moveQueue has any entries, shifts the first one off ({win: next, tileOnArrive, direction}); if `next` is still tracked, sets this._moveInFlight = true again and calls _doMoveToNewWorkspace(next, tileOnArrive, direction) to process it; otherwise (the queued window was closed/untracked before its turn came up) recursively calls _finishMove(null) to try the next queued entry instead, discarding the stale one."
+components:
+  - id: rules-ui
+    type: @View
+    src: borshevik-workspace-manager@komorebinator/window-rules-ui.js
+    description: |
+      Exported class WindowRulesUI, constructed once by the extension (`new WindowRulesUI(this)`) and stored as this._rulesUI. An St/Clutter overlay window (not a real GTK window — it is added directly to the Shell's UI group via Main.layoutManager.addTopChrome) that lets the user inspect which window rules apply to currently open windows and create/edit/delete rules. Toggled via the 'open-rules-ui' keybinding (default Super+r) and closed by the extension on disable().
+      Two tabs: 'Windows' (index 0, default) lists currently open windows on the active workspace grouped with any rules already applied to each, plus a per-window '+ New rule for this window' button that pre-fills a draft rule's class regex with that window's wm_class. 'Rules' (index 1) lists every saved rule regardless of window, plus a generic '+ New rule' button.
+    fields:
+      - id: this._ext
+        type: BorshevikWorkspaceManagerExtension
+        description: Back-reference to the owning extension instance, set in the constructor; used for _settings, _isRelevant, _applyRuleToAll, and _defer.
+      - id: this._settings
+        type: Gio.Settings
+        description: Alias of this._ext._settings, captured in the constructor for convenience.
+      - id: this._widget
+        type: "St.BoxLayout | null"
+        description: The root overlay actor while open (built fresh by _build() each time open() runs); null while closed. Its presence/absence is exactly what toggle()/open()/close() branch on.
+      - id: this._modalPushed
+        type: boolean
+        default: false
+        description: Unused remnant — initialised in the constructor but never read or set to true anywhere in the current implementation.
+      - id: this._initialTab
+        type: number
+        description: Tab index (0 or 1) requested via open(opts.tab); consumed by _build() to choose the starting tab.
+      - id: this._isEditing
+        type: boolean
+        description: True while a rule's detail editor is expanded/open. Gates the Windows tab's live-refresh handler (won't rebuild the tab, discarding an in-progress edit, while this is true) and is read/cleared at several points in the rule-editor button handlers.
+      - id: this._contentBox
+        type: St.BoxLayout
+        description: The per-tab content container below the header; destroyed and repopulated on every _switchTab call.
+      - id: this._tabBtns
+        type: St.Button[]
+        description: The two tab-selector buttons built by _build(), in order [Windows, Rules]; their style_class is updated by _switchTab to reflect which is active.
+      - id: this._activeTab
+        type: number
+        description: Index of the currently selected tab (0 or 1), set by _switchTab; read by the Save button handler in _populateEditor to know which tab to re-render after a save.
+      - id: this._refreshHandles
+        type: "Array<[GObject.Object, number]> | null"
+        description: Live-refresh signal connections for the currently open tab (only the Windows tab sets these); disconnected by _disconnectRefresh on every tab switch and on close().
+      - id: "rule (JSON shape, not a class)"
+        type: "{id: uuid, conditions: {class:{enabled,regex}, title:{enabled,regex}, onAllWorkspaces:{enabled,value}, above:{enabled,value}, skipTaskbar:{enabled,value}, fullscreen:{enabled,value}, maximized:{enabled,value}}, actions: {onAllWorkspaces:{enabled,value}, above:{enabled,value}, openOnNewWorkspace:{enabled,value}, geometry:{enabled,x,y,w,h}}}"
+        description: "Shape of one element of the 'window-rules' GSettings JSON array (see the gschema component). geometry x/y/w/h are percentages 0–100 of the work area. Built by _blankRule, edited as a deep-cloned draft by _populateEditor, persisted by _saveRules, and matched/applied against live windows by the extension's _matchesRule/_applyRule."
+    functions:
+      - id: toggle
+        description: "Calls close() if this._widget is set, else open(). Bound to the 'open-rules-ui' keybinding."
+      - id: open
+        description: "Argument opts (default {}), opts.tab selects the initial tab (default 0). No-op if already open. Sets this._initialTab and this._isEditing = false, calls _build() to construct the widget tree, adds it via Main.layoutManager.addTopChrome (renders above all other UI, including the overview), and gives it keyboard focus via global.stage.set_key_focus."
+      - id: close
+        description: "No-op if not open. Calls _disconnectRefresh() to drop the tab's live-refresh signal connections. Nulls this._widget immediately (so a re-entrant toggle() during the async destroy sees it as closed), removes it from the chrome via Main.layoutManager.removeChrome, and destroys the actor on the next idle tick (GLib.idle_add) rather than synchronously — avoids destroying an actor that's still mid-event-handling."
+      - id: _disconnectRefresh
+        description: "Disconnects every [object, signalId] pair in this._refreshHandles (if set) and nulls the array. Called on close and at the start of every _switchTab to drop the previous tab's live-update signal connections before building the new tab's."
+      - id: _build
+        description: "Computes a centred overlay size from the primary monitor: W = min(680, 55% of monitor width), H = min(580, 72% of monitor height); centres it on the monitor. Constructs the root St.BoxLayout (style_class 'bwm-rules-overlay', vertical, reactive, can_focus) at that position/size. Builds a header row (style_class 'bwm-rules-header') with a title label, two tab buttons ('Windows'/'Rules', style_class 'bwm-rules-tab', each wired to call _switchTab(idx) on click), and a close button (style_class 'bwm-rules-close', icon 'window-close-symbolic', wired to close()). Adds a 1px separator widget below the header. Creates this._contentBox (vertical St.BoxLayout, expanding) below the separator, to be populated per-tab. Finally calls _switchTab(this._initialTab) to render the starting tab."
+      - id: _switchTab
+        description: "Argument idx (0 or 1). Disconnects any previous tab's refresh signals, resets this._isEditing = false, records this._activeTab = idx, destroys all children of this._contentBox, and updates each tab button's style_class to include 'bwm-rules-tab-active' only for the matching index. Calls _buildWindowsTab() for idx 0, else _buildRulesTab()."
+      - id: _buildWindowsTab
+        description: "Creates a scrollable St.ScrollView containing a vertical St.BoxLayout (style_class 'bwm-rules-list') and appends it to this._contentBox. Connects live-refresh: on global.workspace_manager 'active-workspace-changed' or Shell.WindowTracker 'tracked-windows-changed', re-invokes _switchTab(0) UNLESS this._isEditing is true (an open rule editor is not torn down out from under the user mid-edit) — stored in this._refreshHandles for later disconnection. Reads the active workspace's windows filtered by this._ext._isRelevant and not always-on-all-workspaces. If there are none, shows a centred 'No windows on current workspace.' label and returns. Otherwise calls _buildWindowSection(vbox, win, tracker) for each."
+      - id: _buildWindowSection
+        description: "Arguments container, win, tracker (Shell.WindowTracker). Builds one section per window (style_class 'bwm-rules-section'): a header row with the app icon (32px, via tracker.get_window_app(win)) if resolvable, and a label column showing the window title (truncated to 60 chars with an ellipsis, falling back to wm_class or empty if there's no title) plus the wm_class as a secondary label (omitted if empty). For every saved rule whose id is present in win._bwmAppliedRules (defaults to an empty Set if unset), appends an expanded-capable row via _appendRuleRow. Appends a '+ New rule for this window' button that, on click, sets this._isEditing = true, removes itself from the section, and calls _appendRuleRow(section, this._blankRule(win), win, /*startExpanded*/ true) — opens a pre-expanded editor for a brand-new rule seeded from this window (class regex = its wm_class, enabled)."
+      - id: _buildRulesTab
+        description: "Creates the same scroll/list shell as _buildWindowsTab but with no live-refresh subscriptions (rules don't change from outside this UI). Adds a generic '+ New rule' button at the top that, on click, sets this._isEditing = true and inserts a pre-expanded editor for _blankRule(null) (no window context — class/title regex start empty) immediately before that same button via the insertBefore parameter of _appendRuleRow. Then appends a collapsed row for every saved rule via _appendRuleRow(vbox, rule, null) (startExpanded defaults to false)."
+      - id: _appendRuleRow
+        description: "Arguments container, rule, win, startExpanded (default false), insertBefore (default null — an existing actor to insert this row above, used by the Rules tab's new-rule button so the new row appears at the top). isNew = true if no saved rule with this id currently exists in storage. Builds a vertical row box; inserts it before insertBefore if given, else appends. Builds a clickable summary row (style_class 'bwm-rules-summary-row') showing _ruleSummary(rule) as text and a chevron ('▼' if startExpanded else '▶'). Builds a detail box (style_class 'bwm-rules-detail'), initially visible only if startExpanded; if startExpanded, immediately populates it via _populateEditor. Connects the summary row's 'button-press-event' to toggle the detail box's visibility, flip the chevron glyph, set this._isEditing accordingly, and — only when expanding — destroy any stale children and re-call _populateEditor (rebuilds the editor fresh each time it's opened, discarding any unsaved draft from a previous open)."
+      - id: _populateEditor
+        description: |
+          Arguments box, rule, _win (unused), summaryLabel, isNew, onCollapse (a closure that collapses this row, passed down from _appendRuleRow's `collapse` closure). Deep-clones rule into `draft` via JSON round-trip — all edits happen on the clone, committed only on Save. refresh() updates summaryLabel.text live from _ruleSummary(draft) as fields change.
+          Back-fills any action keys that might be missing on rules saved before those actions existed: onAllWorkspaces, above, openOnNewWorkspace each default to {enabled:false, value:true}; geometry defaults to {enabled:false, x:0,y:0,w:50,h:50}.
+          Renders a 'Conditions' section label, then a regex row (toggle + label + text entry, _makeRegexRow) for 'class' and 'title', then a boolean-condition row (toggle + label only, no value entry — presence of the property is the test) for onAllWorkspaces, above, skipTaskbar, fullscreen, maximized via _makeBoolCondRow.
+          Renders an 'Actions' section label, then an action-boolean row (toggle + label) for onAllWorkspaces, above, openOnNewWorkspace via _makeActionBoolRow, then the geometry row via _makeGeomRow.
+          Renders a button row: Save — no-ops if _hasEnabledCondition(draft) is false (refuses to save a rule that would match every window); finds the rule's existing index by id and overwrites it, or pushes it as new; persists via _saveRules; calls this._ext._applyRuleToAll(draft) to apply it retroactively; clears this._isEditing; calls onCollapse(); re-renders the active tab on the next extension-deferred tick (this._ext._defer) so the freshly saved rule shows up correctly classified. Cancel — clears this._isEditing and collapses on the next idle tick, discarding the draft. Delete (only rendered if !isNew) — removes the rule by id from storage, persists, and destroys this row's parent directly (no full tab re-render needed).
+      - id: _makeRegexRow
+        description: "Arguments key, cond ({enabled, regex}), onChange (called after every keystroke, used to live-refresh the summary). Builds a row: a toggle button bound to cond.enabled, a label from LABELS()[key], and an St.Entry pre-filled with cond.regex ?? ''. On every 'text-changed' on the entry's clutter text: validates the current text as a RegExp (try/catch), toggling the 'bwm-entry-error' style class on invalid input without blocking further typing; writes the raw text into cond.regex regardless of validity; calls onChange()."
+      - id: _makeBoolCondRow
+        description: "Arguments key, cond ({enabled}). Builds a row with just a toggle bound to cond.enabled and a label — there is no separate value entry because these conditions test for the mere presence of a boolean window property (e.g. 'is fullscreen'), not a specific value."
+      - id: _makeActionBoolRow
+        description: "Arguments key, action ({enabled, value}). Same shape as _makeBoolCondRow — only the enabled toggle is exposed in this UI; `value` always stays at its default true (set in _blankRule/the back-fill step) since these are 'do this thing' actions, not configurable booleans."
+      - id: _makeGeomRow
+        description: "Argument geom ({enabled, x, y, w, h}, percentages 0–100). Builds a header row (toggle bound to geom.enabled + 'Geometry (%)' label) and a fields row with four labelled numeric St.Entry widgets, one per x/y/w/h, pre-filled with the current value. Each entry's 'text-changed' parses the text as a float and, if valid (not NaN), clamps it to [0, 100] and writes it back into the corresponding geom field; invalid/in-progress input (e.g. an empty string while typing) is simply not written, leaving the last valid value in the draft."
+      - id: _makeToggle
+        description: "Arguments initial (bool), onChange(bool). Builds an St.Button labelled 'ON'/'OFF' (style_class includes 'bwm-toggle-on' when on) that flips a local `state` boolean on every click, updates its own label/style, and calls onChange(state). Shared by every condition/action row in the editor."
+      - id: _getRules
+        description: "Parses this._settings.get_string('window-rules') as JSON and returns it; returns [] on any parse failure."
+      - id: _saveRules
+        description: "Argument rules (array). Writes JSON.stringify(rules) into the 'window-rules' GSettings key."
+      - id: _blankRule
+        description: "Argument win (nullable). Returns a freshly-generated rule object: id = GLib.uuid_string_random(). conditions.class is pre-enabled with regex = win?.get_wm_class() ?? '' (empty if no window context); conditions.title is pre-disabled with regex = win?.get_title() ?? ''; the five boolean conditions (onAllWorkspaces/above/skipTaskbar/fullscreen/maximized) all start disabled with value:false. actions.onAllWorkspaces/above/openOnNewWorkspace all start disabled with value:true. actions.geometry starts disabled, with x/y/w/h pre-seeded from the window's CURRENT position/size as percentages of its work area if a window was given (so toggling geometry on without touching the fields captures where it already is), else x=0,y=0,w=50,h=50."
+      - id: _ruleSummary
+        description: "Argument rule. Builds a human-readable one-line summary: conditions are listed as `key~regex` (for class/title) or `key=value` (for booleans), comma-joined, only for entries with enabled:true, falling back to '(no conditions)' if none. Actions are listed by key alone (mapped through LABELS, with 'geometry' shown as the literal string 'geom'), comma-joined, only for enabled entries, falling back to '(no actions)'. Returns `${conditions}  →  ${actions}`."
+      - id: _hasEnabledCondition
+        description: "Argument rule. Returns true if at least one entry in rule.conditions has enabled:true. Used by the Save button to refuse persisting a condition-less rule, which would otherwise match every window unconditionally."
+  - id: preferences
+    type: @View
+    src: borshevik-workspace-manager@komorebinator/prefs.js
+    description: "GNOME Extensions app preferences page (Adw.PreferencesPage / Adw.PreferencesGroup), separate process from the Shell — opened via the GNOME Extensions app's settings button for this extension, not via the in-Shell rules-ui."
+    functions:
+      - id: fillPreferencesWindow
+        description: "Argument window. Gets a bound gettext function and this.getSettings(). Builds one Adw.PreferencesPage containing one Adw.PreferencesGroup with: a Gtk.Switch row 'Open overview on last workspace' two-way bound (Gio.SettingsBindFlags.DEFAULT) to the 'overview-on-last-workspace' boolean key; a Gtk.Switch row 'Debug logging' bound likewise to 'debug-logging'; an Adw.ComboRow 'When last window on workspace closes' populated with three choices (Go back / Open overview / Do nothing mapping to GSettings string values 'prev' / 'overview' / 'nothing'), whose initial `selected` index is derived from the current 'on-empty-workspace' string value (defaulting to index 0 if unrecognised), and whose 'notify::selected' signal writes the corresponding key string back to GSettings. Adds the group to the page and the page to the window."
+  - id: gschema
+    type: @ConfigFile
+    format: GSettings schema (XML)
+    scope: GNOME Shell extension framework — compiled to .compiled and read by both extension.js (Gio.Settings via this.getSettings()) and prefs.js
+    src: borshevik-workspace-manager@komorebinator/schemas/org.gnome.shell.extensions.borshevik-workspace-manager.gschema.xml
+    description: |
+      Schema id 'org.gnome.shell.extensions.borshevik-workspace-manager', path '/org/gnome/shell/extensions/borshevik-workspace-manager/'. Keys:
+      debug-logging (boolean, default false) — gates the LOG console wrapper.
+      overview-on-last-workspace (boolean, default true) — gates _onActiveWorkspaceChanged's auto-overview behaviour.
+      float-sizes (string, default '{}') — JSON map of wm_class → {wr, hr} fractions of the work area, written by _captureAndSaveFloatGeom and read by _loadFloatGeom/_registerWindow/_doFloat.
+      tile-left (string array, default ['<Super>Left']) — keybinding for _tileKeyboard('left').
+      tile-right (string array, default ['<Super>Right']) — keybinding for _tileKeyboard('right').
+      open-rules-ui (string array, default ['<Super>r']) — keybinding for rules-ui#toggle.
+      window-rules (string, default a JSON array seeded with three example rules — a Steam class match that opens on a new workspace, a 'Picture in picture' title match that goes sticky+above+a quarter-screen geometry box, and an it.mijorus.collector class match that goes sticky+above without geometry) — the rule storage consumed by _applyWindowRules/_applyRuleToAll/_matchesRule/_applyRule and edited via rules-ui.
+      on-empty-workspace (string, default 'prev', choices: prev | overview | nothing) — consumed by _leaveIfEmpty.
+  - id: metadata
+    type: @ConfigFile
+    src: borshevik-workspace-manager@komorebinator/metadata.json
+    description: "GNOME Shell extension manifest read by the Shell's extension loader. Fields: name='Borshevik Workspace Manager'; description — user-facing summary in the GNOME Extensions app; url=the GitHub repository; uuid='borshevik-workspace-manager@komorebinator' (must match the extension folder name); shell-version=['49','50'] (supports both, unlike app-search which is 50-only); version=1; settings-schema='org.gnome.shell.extensions.borshevik-workspace-manager' (links to the gschema component, required for this.getSettings() to work)."
+  - id: icon
+    type: @Graphic
+    format: SVG
+    role: app-icon
+    src: borshevik-workspace-manager@komorebinator/bwm_icon.svg
+    description: "Logo icon shown at 22px in the panel indicator's logo button (loaded at runtime via `this.path + '/bwm_icon.svg'`, not bundled into the stylesheet)."
+  - id: stylesheet
+    type: @ConfigFile
+    format: CSS (GNOME Shell St theming)
+    scope: GNOME Shell — loaded automatically by the extension framework for any extension shipping a stylesheet.css, applies to the St widgets created in extension.js and window-rules-ui.js
+    src: borshevik-workspace-manager@komorebinator/stylesheet.css
+    description: |
+      Selector groups, in file order: panel indicator (.bwm-indicator spacing; .bwm-logo-btn/.bwm-logo-bg with a 150ms hover/active background transition and a pill border-radius of 9999px; .bwm-ws/.bwm-ws-bg per-workspace pill buttons with active/hover/drag-over background variants; .bwm-ws-row/.bwm-ws-num/.bwm-app-icon/.bwm-ws-plus for the row contents). Rules overlay chrome (.bwm-rules-overlay — dark #2b2b2b panel, 12px radius, subtle border and drop shadow; .bwm-rules-header/.bwm-rules-title/.bwm-rules-tab(-active)/.bwm-rules-close/.bwm-rules-separator). Window sections and rows (.bwm-rules-scroll/-list/-empty; .bwm-rules-section/-win-row/-win-icon/-win-class/-win-title; .bwm-rules-new-btn). Rule rows (.bwm-rules-rule-row/-summary-row(:hover)/-summary-text/-chevron/-detail). Editor controls (.bwm-rules-section-label; .bwm-rules-row/-row-label; .bwm-rules-entry plus a .bwm-entry-error red-border state for invalid regex; .bwm-rules-geom-box/-row/-label/-entry). Toggle buttons (.bwm-toggle / .bwm-toggle-on, the latter using the theme's `-st-accent-color`). Action buttons (.bwm-rules-btn-row; .bwm-rules-save-btn using `-st-accent-color` with an `st-lighten` hover state; .bwm-rules-cancel-btn neutral grey; .bwm-rules-del-btn red-tinted destructive styling). Visual language throughout: a dark, semi-transparent, pill/rounded-corner aesthetic matching GNOME Shell's own quick-settings panel, themed to the user's accent colour for active/primary controls.
+  - id: translations
+    type: @ConfigFile
+    format: gettext (.pot template, .po per-locale, compiled .mo)
+    scope: loaded at runtime by this.initTranslations() in extension.js (enable()); domain matches the extension uuid
+    src:
+      - po/borshevik-workspace-manager@komorebinator.pot
+      - po/ru.po
+      - borshevik-workspace-manager@komorebinator/locale/ru/LC_MESSAGES/borshevik-workspace-manager@komorebinator.mo
+    description: "Standard GNOME Shell extension gettext setup. The .pot template lists every string wrapped in gettext (_(...)) across extension.js, window-rules-ui.js, and prefs.js (e.g. all rules-ui labels, the preferences page strings). ru.po is the Russian translation; the compiled .mo under locale/ru/LC_MESSAGES is what GLib's gettext actually loads at runtime. No other locales are currently translated."
