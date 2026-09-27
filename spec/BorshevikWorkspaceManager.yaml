@@ -1,5 +1,5 @@
 description: GNOME Shell extension for Borshevik Linux — replaces GNOME's default workspace behaviour with an opinionated tiling + workspace management system.
-extends: @DuckspecProject
+extends: "@DuckspecProject"
 terms_folder: BorshevikWorkspaceManager/
 repository: https://github.com/komorebinator/borshevik-workspace-manager
 uses:
@@ -8,8 +8,8 @@ uses:
 settings:
   readme: ../README.md
 software:
-  - @BorshevikWorkspaceManagerExtension
+  - "@BorshevikWorkspaceManagerExtension"
 startup:
   - load
 workflow:
-  type: @BorshevikWorkspaceManagerWorkflow
+  type: "@BorshevikWorkspaceManagerWorkflow"

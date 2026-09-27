@@ -17,8 +17,8 @@ description: |
   State model: all per-window state lives on the Meta.Window object itself (the win._bwm*
   fields), never in Maps or index-keyed structures, so it survives workspace index shifts and
   enable/disable cycles. A window is managed exactly when win._bwmState is set (isTracked).
-extends: @Extension
-target: @GnomeShell
+extends: "@Extension"
+target: "@GnomeShell"
 platform: GJS (GNOME Shell 49/50) — Clutter, GLib, Meta, Shell, St, Gio
 src: borshevik-workspace-manager@komorebinator/extension.js
 guidelines:
@@ -219,7 +219,7 @@ functions:
     description: "Applies a matching rule's enabled actions: stick to or unstick from all workspaces, keep on top or not, a geometry given as percentages of the work area, and — only for a window not yet placed — opening on a workspace of its own. Records the rule on the window either way."
 components:
   - id: rules-ui
-    type: @View
+    type: "@View"
     src: borshevik-workspace-manager@komorebinator/window-rules-ui.js
     description: |
       An overlay inside GNOME Shell (not a separate window) for seeing and editing window rules, toggled by Super+R. The Windows tab lists the active workspace's windows with the rules that apply to each and a button to start a rule from that window; it follows window and workspace changes live, but not while a rule is being edited, which would throw the edit away. The Rules tab lists all rules and starts a blank one. A rule is edited in place as a draft: Save refuses a rule with no enabled condition, since it would match every window, stores it, and applies it at once to all open windows (_applyRuleToAll); Cancel drops the draft; Delete removes a saved rule. A rule started from a window is prefilled with its class, and its geometry with where the window is now, so switching geometry on keeps it in place.
@@ -228,31 +228,31 @@ components:
         type: "{id: uuid, conditions: {class:{enabled,regex}, title:{enabled,regex}, onAllWorkspaces:{enabled,value}, above:{enabled,value}, skipTaskbar:{enabled,value}, fullscreen:{enabled,value}, maximized:{enabled,value}}, actions: {onAllWorkspaces:{enabled,value}, above:{enabled,value}, openOnNewWorkspace:{enabled,value}, geometry:{enabled,x,y,w,h}}}"
         description: "One element of the window-rules setting, as rules-ui writes it and _matchesRule/_applyRule read it. Only `enabled` is edited for the boolean conditions and actions; their `value` stays at its default. geometry is in percentages of the work area. Rules saved before an action existed get it filled in, disabled, when opened in the editor."
   - id: preferences
-    type: @View
+    type: "@View"
     src: borshevik-workspace-manager@komorebinator/prefs.js
     description: "The page the GNOME Extensions app shows for this extension: whether landing on the last, empty workspace opens the overview; what happens when the last window on a workspace closes (go back, open the overview, or nothing); and debug logging."
   - id: gschema
-    type: @ConfigFile
+    type: "@ConfigFile"
     format: GSettings schema (XML)
     src: borshevik-workspace-manager@komorebinator/schemas/org.gnome.shell.extensions.borshevik-workspace-manager.gschema.xml
     description: "The extension's settings: the three the preferences page edits; the three keybindings (Super+Left, Super+Right, Super+R); the remembered float sizes per window class; and the window rules, which ship with three examples — Steam on a workspace of its own, picture-in-picture windows on top on every workspace in a corner, and the Collector app on top on every workspace."
   - id: metadata
-    type: @ConfigFile
+    type: "@ConfigFile"
     src: borshevik-workspace-manager@komorebinator/metadata.json
     description: "Extension manifest: GNOME Shell 49 and 50, linking the settings schema."
   - id: icon
-    type: @Graphic
+    type: "@Graphic"
     format: SVG
     role: app-icon
     src: borshevik-workspace-manager@komorebinator/bwm_icon.svg
     description: The logo on the panel indicator's first button.
   - id: stylesheet
-    type: @ConfigFile
+    type: "@ConfigFile"
     format: CSS (GNOME Shell St theming)
     src: borshevik-workspace-manager@komorebinator/stylesheet.css
     description: "Styles of the panel indicator and the rules overlay, loaded by GNOME Shell with the extension. Active and primary controls follow the user's accent colour; the snap preview reuses GNOME's own tile-preview style for the same reason."
   - id: translations
-    type: @ConfigFile
+    type: "@ConfigFile"
     format: gettext (.pot template, .po per-locale, compiled .mo)
     src:
       - po/borshevik-workspace-manager@komorebinator.pot
