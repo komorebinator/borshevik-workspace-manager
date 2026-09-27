@@ -30,7 +30,6 @@ export class WindowRulesUI {
         this._ext      = extension;
         this._settings = extension._settings;
         this._widget   = null;
-        this._modalPushed = false;
     }
 
     toggle() {
@@ -400,7 +399,7 @@ export class WindowRulesUI {
 
         const headerRow = new St.BoxLayout({ style_class: 'bwm-rules-row', x_expand: true });
         headerRow.add_child(this._makeToggle(geom.enabled, v => { geom.enabled = v; }));
-        headerRow.add_child(new St.Label({ text: LABELS.geometry, style_class: 'bwm-rules-row-label', x_expand: true, y_align: Clutter.ActorAlign.CENTER }));
+        headerRow.add_child(new St.Label({ text: LABELS().geometry, style_class: 'bwm-rules-row-label', x_expand: true, y_align: Clutter.ActorAlign.CENTER }));
         box.add_child(headerRow);
 
         const fieldsRow = new St.BoxLayout({ style_class: 'bwm-rules-geom-row', x_expand: true });
@@ -480,7 +479,7 @@ export class WindowRulesUI {
             .join(', ');
         const acts = Object.entries(rule.actions)
             .filter(([, a]) => a.enabled)
-            .map(([k]) => k === 'geometry' ? 'geom' : (LABELS[k] ?? k))
+            .map(([k]) => k === 'geometry' ? 'geom' : (LABELS()[k] ?? k))
             .join(', ');
         return (conds || _('(no conditions)')) + '  →  ' + (acts || _('(no actions)'));
     }
