@@ -1,0 +1,5 @@
+description: "How work is done on the Borshevik Workspace Manager: the way every one of Borshevik's own extensions is worked on (@BorshevikExtensionWorkflow), plus what its translations and settings schema ask of a change."
+extends: @BorshevikExtensionWorkflow
+guidelines:
+  - "The compiled Russian translation under `locale/` is what the image ships, since Borshevik builds nothing but the schemas: a change to `po/ru.po` is not finished until the `.mo` is regenerated with msgfmt and committed alongside it, or the image keeps the old strings."
+  - "`schemas/gschemas.compiled` is the opposite case — ignored by git and compiled at install time, both by the image build and by @BorshevikWorkspaceManagerExtension#recipes#run — so it is never committed."
