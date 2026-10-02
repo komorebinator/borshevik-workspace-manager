@@ -16,6 +16,8 @@ import { WindowRulesUI } from './window-rules-ui.js';
 let   LOG    = () => {};
 const SNAP_PX         = 32;
 const DRAG_THRESHOLD  = 20;   // px cursor must travel before snap zones activate
+// Waydroid's windows: `Waydroid` (Android's full interface), `waydroid.<package>` (an app)
+const ANDROID_WM_CLASS = /^waydroid(\..+)?$/i;
 
 // Window is managed by us if it has _bwmState set.
 // State lives on the window object itself — survives workspace index shifts,
@@ -474,7 +476,8 @@ export default class BorshevikWorkspaceManager extends Extension {
     _isRelevant(win) {
         return win.window_type === Meta.WindowType.NORMAL &&
             !win.skip_taskbar &&
-            !win.is_on_all_workspaces();
+            !win.is_on_all_workspaces() &&
+            !ANDROID_WM_CLASS.test(win.get_wm_class() ?? '');
     }
 
     _defer(fn) {
@@ -541,6 +544,12 @@ export default class BorshevikWorkspaceManager extends Extension {
             const id = actor.connect('first-frame', () => {
                 actor.disconnect(id);
                 if (isTracked(win)) return; // already registered (e.g. via grab-op)
+                // A Wayland client names its app id after the window is created:
+                // only now does wm_class tell an Android window from others.
+                if (!this._isRelevant(win)) {
+                    LOG('first-frame: not managed', win.get_wm_class());
+                    return;
+                }
                 this._registerWindow(win);
             });
         };

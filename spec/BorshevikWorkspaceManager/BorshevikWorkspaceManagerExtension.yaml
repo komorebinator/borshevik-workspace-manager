@@ -45,6 +45,10 @@ fields:
     type: number
     default: 20
     description: How far the pointer must travel from where a drag started before snap zones activate and a tiled window is detached, so a click on a title bar is not a drag.
+  - id: ANDROID_WM_CLASS
+    type: RegExp
+    default: /^waydroid(\..+)?$/i
+    description: The wm_class of Waydroid's windows — `Waydroid`, Android's full interface, and `waydroid.<package>`, one app — which _isRelevant leaves alone.
   - id: LOG
     type: "(...args) => void"
     description: A no-op, or a console.log wrapper prefixed '[BWM]' while the debug-logging setting is on; follows that setting live.
@@ -114,7 +118,7 @@ functions:
   - id: _adoptExistingWindows
     description: "At enable, takes every relevant window that is already open under management in place, without moving it: maximized ones as maximized (to be restored as floating, since their real prior state is unknown), the rest as floating at their current geometry. Needed because after a shell restart some windows — Chrome web apps among them — come back without the signals new windows send, and would otherwise stay untracked, so a new window opening beside them would take their workspace for empty."
   - id: _isRelevant
-    description: "Whether the extension manages a window at all: normal windows only, not hidden from the taskbar and not on all workspaces. Dialogs, docks and sticky windows are left alone everywhere — tiling, the indicator and rules-ui."
+    description: "Whether the extension manages a window at all: normal windows only, not hidden from the taskbar, not on all workspaces, and not Android's. Dialogs, docks and sticky windows are left alone everywhere — tiling, the indicator and rules-ui. Android's windows are Waydroid's — `Waydroid` for its full interface and `waydroid.<package>` for each app, by wm_class — and are left alone because what the extension does to a window breaks them: Android sizes its own windows and Waydroid recreates a window when Android does, so each recreation reads as a new window to place, moving it to a workspace of its own and maximizing it; a maximized Android window covers the others inside Android's single display, where Android pauses them and Waydroid then closes their windows; and resizing Android's windows changes Android's display mode, on which Android's compositor has crashed. GNOME's own placement leaves them where Waydroid puts them."
   - id: _defer
     description: Runs a function once, at the compositor's next idle. Used wherever the extension must let Mutter finish the current operation — an unmaximize, a workspace change — before reading back state or acting on it; read synchronously inside a signal handler, that state is often stale.
   - id: _captureAndSaveFloatGeom
@@ -122,7 +126,7 @@ functions:
   - id: _getLayout
     description: "The two tile slots of a workspace on a monitor, computed from the live windows every time: each slot holds the window tiled there, or the blocking window (see guidelines), which fills both. Never cached, so it cannot drift from reality."
   - id: _onWindowCreated
-    description: "Starts managing a new relevant window once its first frame is drawn, so its real initial geometry is known — unless the grab-op path registered it meanwhile."
+    description: "Starts managing a new relevant window once its first frame is drawn, so its real initial geometry is known — unless the grab-op path registered it meanwhile. Relevance is asked again at the first frame: a Wayland client names its app id after its window is created, so at creation wm_class is still empty and _isRelevant cannot yet tell an Android window from any other (Waydroid's windows were registered this way)."
   - id: _registerWindow
     description: "Takes a new window under management as floating, applies the window rules (deferred), seeds its float geometry — from the float-sizes setting for its class, centred on the work area, else from its current geometry unless it opened maximized — follows its unmanage, workspace, maximize and fullscreen changes, and queues it in the 150ms batch."
   - id: _flushBatch
