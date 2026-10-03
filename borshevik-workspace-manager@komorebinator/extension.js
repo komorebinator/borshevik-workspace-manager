@@ -16,8 +16,6 @@ import { WindowRulesUI } from './window-rules-ui.js';
 let   LOG    = () => {};
 const SNAP_PX         = 32;
 const DRAG_THRESHOLD  = 20;   // px cursor must travel before snap zones activate
-// Waydroid's windows: `Waydroid` (Android's full interface), `waydroid.<package>` (an app)
-const ANDROID_WM_CLASS = /^waydroid(\..+)?$/i;
 
 // Window is managed by us if it has _bwmState set.
 // State lives on the window object itself — survives workspace index shifts,
@@ -33,6 +31,7 @@ const ANDROID_WM_CLASS = /^waydroid(\..+)?$/i;
 // win._bwmOrigin        { ws: MetaWorkspace, side?: string } | undefined  — original workspace (and slot) this window was moved from
 // win._bwmAppliedRules  Set<uuid> — UUIDs of window rules applied at map time
 // win._bwmForceNewWs    string    — rule id requesting window opens on a dedicated workspace
+// win._bwmIgnored       bool      — a rule leaves this window alone: never registered, still relevant
 
 const isTracked = win => win._bwmState !== undefined;
 
@@ -399,7 +398,16 @@ export default class BorshevikWorkspaceManager extends Extension {
         const manager = global.workspace_manager;
         for (let i = 0; i < manager.get_n_workspaces(); i++)
             for (const win of manager.get_workspace_by_index(i).list_windows())
-                if (isTracked(win)) this._applyRule(win, rule);
+                if (isTracked(win) || win._bwmIgnored) this._applyRule(win, rule);
+    }
+
+    // Whether a rule says to leave the window alone. Asked only before a window
+    // is first taken under management; a managed window stays managed.
+    _isIgnored(win) {
+        let rules;
+        try   { rules = JSON.parse(this._settings.get_string('window-rules')); }
+        catch { return false; }
+        return rules.some(rule => rule.actions?.ignore?.enabled && this._matchesRule(win, rule));
     }
 
     _matchesRule(win, rule) {
@@ -461,6 +469,10 @@ export default class BorshevikWorkspaceManager extends Extension {
         for (let i = 0; i < wm.get_n_workspaces(); i++) {
             for (const win of wm.get_workspace_by_index(i).list_windows()) {
                 if (!this._isRelevant(win) || isTracked(win)) continue;
+                if (this._isIgnored(win)) {
+                    this._ignoreWindow(win);
+                    continue;
+                }
                 if (win.get_maximized() === Meta.MaximizeFlags.BOTH) {
                     win._bwmState  = 'maximized';
                     win._bwmPreMax = 'floating';
@@ -476,8 +488,7 @@ export default class BorshevikWorkspaceManager extends Extension {
     _isRelevant(win) {
         return win.window_type === Meta.WindowType.NORMAL &&
             !win.skip_taskbar &&
-            !win.is_on_all_workspaces() &&
-            !ANDROID_WM_CLASS.test(win.get_wm_class() ?? '');
+            !win.is_on_all_workspaces();
     }
 
     _defer(fn) {
@@ -545,9 +556,9 @@ export default class BorshevikWorkspaceManager extends Extension {
                 actor.disconnect(id);
                 if (isTracked(win)) return; // already registered (e.g. via grab-op)
                 // A Wayland client names its app id after the window is created:
-                // only now does wm_class tell an Android window from others.
-                if (!this._isRelevant(win)) {
-                    LOG('first-frame: not managed', win.get_wm_class());
+                // only now can a rule on class tell whether to leave it alone.
+                if (this._isIgnored(win)) {
+                    this._ignoreWindow(win);
                     return;
                 }
                 this._registerWindow(win);
@@ -563,6 +574,13 @@ export default class BorshevikWorkspaceManager extends Extension {
                 attach();
             });
         }
+    }
+
+    _ignoreWindow(win) {
+        LOG('ignore:', win.get_wm_class());
+        win._bwmIgnored      = true;
+        win._bwmAppliedRules = new Set();
+        this._defer(() => this._applyWindowRules(win));
     }
 
     _registerWindow(win) {
@@ -834,7 +852,7 @@ export default class BorshevikWorkspaceManager extends Extension {
 
         // Chrome tab-detach creates a window that never fires `map` on Wayland.
         // Register it here so drag-to-snap works normally.
-        if (win && !isTracked(win) && this._isRelevant(win)) {
+        if (win && !isTracked(win) && !win._bwmIgnored && this._isRelevant(win) && !this._isIgnored(win)) {
             LOG('grab-op-begin: late-registering', win.get_wm_class());
             win._bwmState      = 'floating';
             win._bwmPreMax     = undefined;

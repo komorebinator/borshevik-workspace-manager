@@ -45,10 +45,6 @@ fields:
     type: number
     default: 20
     description: How far the pointer must travel from where a drag started before snap zones activate and a tiled window is detached, so a click on a title bar is not a drag.
-  - id: ANDROID_WM_CLASS
-    type: RegExp
-    default: /^waydroid(\..+)?$/i
-    description: The wm_class of Waydroid's windows — `Waydroid`, Android's full interface, and `waydroid.<package>`, one app — which _isRelevant leaves alone.
   - id: LOG
     type: "(...args) => void"
     description: A no-op, or a console.log wrapper prefixed '[BWM]' while the debug-logging setting is on; follows that setting live.
@@ -85,6 +81,9 @@ fields:
   - id: win._bwmForceNewWs
     type: "string | undefined"
     description: The id of a rule whose openOnNewWorkspace action matched a window not yet placed; _handleNewWindow then sends the window to _moveToRuleWorkspace instead of the normal placement.
+  - id: win._bwmIgnored
+    type: boolean
+    description: "Set on a relevant window that a rule's ignore action left alone when it opened (_isIgnored). Such a window is never registered — it has no _bwmState, so nothing places, tiles, moves or maximizes it — yet it stays relevant, so the indicator shows it and an emptied workspace counts it. The rules still apply their other actions to it, now and whenever a rule is saved."
   - id: this._moveQueue
     type: "Array<{win, tileOnArrive, direction}>"
     default: "[]"
@@ -116,9 +115,9 @@ fields:
     description: GNOME's own tile-left binding, cleared while the extension owns Super+Left and restored on disable; this._savedTileRight is its right-hand twin.
 functions:
   - id: _adoptExistingWindows
-    description: "At enable, takes every relevant window that is already open under management in place, without moving it: maximized ones as maximized (to be restored as floating, since their real prior state is unknown), the rest as floating at their current geometry. Needed because after a shell restart some windows — Chrome web apps among them — come back without the signals new windows send, and would otherwise stay untracked, so a new window opening beside them would take their workspace for empty."
+    description: "At enable, takes every relevant window that is already open and that no rule leaves alone (_isIgnored) under management in place, without moving it: maximized ones as maximized (to be restored as floating, since their real prior state is unknown), the rest as floating at their current geometry. Needed because after a shell restart some windows — Chrome web apps among them — come back without the signals new windows send, and would otherwise stay untracked, so a new window opening beside them would take their workspace for empty."
   - id: _isRelevant
-    description: "Whether the extension manages a window at all: normal windows only, not hidden from the taskbar, not on all workspaces, and not Android's. Dialogs, docks and sticky windows are left alone everywhere — tiling, the indicator and rules-ui. Android's windows are Waydroid's — `Waydroid` for its full interface and `waydroid.<package>` for each app, by wm_class — and are left alone because what the extension does to a window breaks them: Android sizes its own windows and Waydroid recreates a window when Android does, so each recreation reads as a new window to place, moving it to a workspace of its own and maximizing it; a maximized Android window covers the others inside Android's single display, where Android pauses them and Waydroid then closes their windows; and resizing Android's windows changes Android's display mode, on which Android's compositor has crashed. GNOME's own placement leaves them where Waydroid puts them."
+    description: "Whether the extension manages a window at all: normal windows only, not hidden from the taskbar and not on all workspaces. Dialogs, docks and sticky windows are left alone everywhere — tiling, the indicator and rules-ui."
   - id: _defer
     description: Runs a function once, at the compositor's next idle. Used wherever the extension must let Mutter finish the current operation — an unmaximize, a workspace change — before reading back state or acting on it; read synchronously inside a signal handler, that state is often stale.
   - id: _captureAndSaveFloatGeom
@@ -126,7 +125,11 @@ functions:
   - id: _getLayout
     description: "The two tile slots of a workspace on a monitor, computed from the live windows every time: each slot holds the window tiled there, or the blocking window (see guidelines), which fills both. Never cached, so it cannot drift from reality."
   - id: _onWindowCreated
-    description: "Starts managing a new relevant window once its first frame is drawn, so its real initial geometry is known — unless the grab-op path registered it meanwhile. Relevance is asked again at the first frame: a Wayland client names its app id after its window is created, so at creation wm_class is still empty and _isRelevant cannot yet tell an Android window from any other (Waydroid's windows were registered this way)."
+    description: "Starts managing a new relevant window once its first frame is drawn, so its real initial geometry is known — unless the grab-op path registered it meanwhile, or a rule leaves it alone (_isIgnored), in which case _ignoreWindow takes it instead. The ignore rules are asked at the first frame and not at creation because a Wayland client names its app id after its window is created: at creation wm_class is still empty, so a rule on class would match nothing (Waydroid's windows slipped through this way)."
+  - id: _ignoreWindow
+    description: "Marks a window a rule leaves alone (win._bwmIgnored) and applies the window rules to it (deferred), the same as for a registered window, so its other actions — on top, on all workspaces, geometry — still take effect."
+  - id: _isIgnored
+    description: "Whether an enabled ignore action of a rule the window matches says to leave it alone. Asked before a window is first taken under management — at its first frame, at enable, and when a grab starts on a window never announced — and nowhere else: a window already managed stays managed until it is reopened."
   - id: _registerWindow
     description: "Takes a new window under management as floating, applies the window rules (deferred), seeds its float geometry — from the float-sizes setting for its class, centred on the work area, else from its current geometry unless it opened maximized — follows its unmanage, workspace, maximize and fullscreen changes, and queues it in the 150ms batch."
   - id: _flushBatch
@@ -156,7 +159,7 @@ functions:
       Restores a window after unmaximize. During a drag it just floats — Mutter unmaximizes on drag start and the drop decides. A window that was given its own workspace goes back where it came from: into its old slot if that is free and its old workspace shows nothing fullscreen, or floating onto its old workspace if it was floating. Otherwise it returns to its previous tile slot on the current workspace if that is free, and floats if not.
   - id: _onGrabBegin
     description: |
-      Registers late a window that was never announced (see the Chrome tab-detach guideline). A move grab starts a drag, polled every 33ms by _pollDrag; a tiled window is detached only once the drag passes DRAG_THRESHOLD, not on the click. A resize grab of a tile whose partner is also tiled is remembered for a linked resize.
+      Registers late a window that was never announced (see the Chrome tab-detach guideline), unless a rule leaves it alone. A move grab starts a drag, polled every 33ms by _pollDrag; a tiled window is detached only once the drag passes DRAG_THRESHOLD, not on the click. A resize grab of a tile whose partner is also tiled is remembered for a linked resize.
   - id: _onGrabEnd
     description: Ends a drag (_finalizeDrag) or a linked resize (_finalizeResize).
   - id: _pollDrag
@@ -216,11 +219,11 @@ functions:
   - id: _applyWindowRules
     description: Applies every saved rule, in order, to a newly registered window; a later rule can override an earlier one's effect.
   - id: _applyRuleToAll
-    description: Applies a rule just saved in rules-ui to every open managed window, so editing a rule takes effect at once, not only for future windows.
+    description: Applies a rule just saved in rules-ui to every open managed window and every window left alone (win._bwmIgnored), so editing a rule takes effect at once, not only for future windows. An ignore action is the exception — see _isIgnored.
   - id: _matchesRule
     description: "Whether a window meets a rule: every enabled condition must hold — the class and title regexes (an invalid regex matches nothing), and for the boolean conditions only that the window currently has that property; their stored `value` is not consulted."
   - id: _applyRule
-    description: "Applies a matching rule's enabled actions: stick to or unstick from all workspaces, keep on top or not, a geometry given as percentages of the work area, and — only for a window not yet placed — opening on a workspace of its own. Records the rule on the window either way."
+    description: "Applies a matching rule's enabled actions: stick to or unstick from all workspaces, keep on top or not, a geometry given as percentages of the work area, and — only for a window not yet placed — opening on a workspace of its own. The ignore action is not one of them: it decides whether a window is managed at all, which only _isIgnored asks. Records the rule on the window either way."
 components:
   - id: rules-ui
     type: "@View"
@@ -229,7 +232,7 @@ components:
       An overlay inside GNOME Shell (not a separate window) for seeing and editing window rules, toggled by Super+R. The Windows tab lists the active workspace's windows with the rules that apply to each and a button to start a rule from that window; it follows window and workspace changes live, but not while a rule is being edited, which would throw the edit away. The Rules tab lists all rules and starts a blank one. A rule is edited in place as a draft: Save refuses a rule with no enabled condition, since it would match every window, stores it, and applies it at once to all open windows (_applyRuleToAll); Cancel drops the draft; Delete removes a saved rule. A rule started from a window is prefilled with its class, and its geometry with where the window is now, so switching geometry on keeps it in place.
     fields:
       - id: "rule (JSON shape, not a class)"
-        type: "{id: uuid, conditions: {class:{enabled,regex}, title:{enabled,regex}, onAllWorkspaces:{enabled,value}, above:{enabled,value}, skipTaskbar:{enabled,value}, fullscreen:{enabled,value}, maximized:{enabled,value}}, actions: {onAllWorkspaces:{enabled,value}, above:{enabled,value}, openOnNewWorkspace:{enabled,value}, geometry:{enabled,x,y,w,h}}}"
+        type: "{id: uuid, conditions: {class:{enabled,regex}, title:{enabled,regex}, onAllWorkspaces:{enabled,value}, above:{enabled,value}, skipTaskbar:{enabled,value}, fullscreen:{enabled,value}, maximized:{enabled,value}}, actions: {onAllWorkspaces:{enabled,value}, above:{enabled,value}, openOnNewWorkspace:{enabled,value}, ignore:{enabled,value}, geometry:{enabled,x,y,w,h}}}"
         description: "One element of the window-rules setting, as rules-ui writes it and _matchesRule/_applyRule read it. Only `enabled` is edited for the boolean conditions and actions; their `value` stays at its default. geometry is in percentages of the work area. Rules saved before an action existed get it filled in, disabled, when opened in the editor."
   - id: preferences
     type: "@View"
@@ -239,7 +242,7 @@ components:
     type: "@ConfigFile"
     format: GSettings schema (XML)
     src: borshevik-workspace-manager@komorebinator/schemas/org.gnome.shell.extensions.borshevik-workspace-manager.gschema.xml
-    description: "The extension's settings: the three the preferences page edits; the three keybindings (Super+Left, Super+Right, Super+R); the remembered float sizes per window class; and the window rules, which ship with three examples — Steam on a workspace of its own, picture-in-picture windows on top on every workspace in a corner, and the Collector app on top on every workspace."
+    description: "The extension's settings: the three the preferences page edits; the three keybindings (Super+Left, Super+Right, Super+R); the remembered float sizes per window class; and the window rules, which ship with three examples — Steam on a workspace of its own, picture-in-picture windows on top on every workspace in a corner, and the Collector app on top on every workspace — and one rule Borshevik needs: Android's windows left alone. Those are Waydroid's, by class `Waydroid` for Android's full interface and `waydroid.<package>` for each app, and what the extension does to a window breaks them: Android sizes its own windows and Waydroid recreates a window when Android does, so each recreation reads as a new window to place, moving it to a workspace of its own and maximizing it; a maximized Android window covers the others inside Android's single display, where Android pauses them and Waydroid then closes their windows; and resizing Android's windows changes Android's display mode, on which Android's compositor has crashed. Being a default, the rule reaches only users who have not saved rules of their own."
   - id: metadata
     type: "@ConfigFile"
     src: borshevik-workspace-manager@komorebinator/metadata.json

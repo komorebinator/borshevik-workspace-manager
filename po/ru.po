@@ -43,6 +43,9 @@ msgstr "Геометрия (%)"
 msgid "Open on new workspace"
 msgstr "Открывать на новом рабочем столе"
 
+msgid "Leave alone (no tiling or moving)"
+msgstr "Не трогать (без тайлинга и перемещения)"
+
 msgid "Window Rules"
 msgstr "Правила окон"
 

@@ -23,6 +23,7 @@ const LABELS = () => ({
     maximized:          _('Maximized'),
     geometry:           _('Geometry (%)'),
     openOnNewWorkspace: _('Open on new workspace'),
+    ignore:             _('Leave alone (no tiling or moving)'),
 });
 
 export class WindowRulesUI {
@@ -306,6 +307,7 @@ export class WindowRulesUI {
         draft.actions.onAllWorkspaces    ??= { enabled: false, value: true };
         draft.actions.above              ??= { enabled: false, value: true };
         draft.actions.openOnNewWorkspace ??= { enabled: false, value: true };
+        draft.actions.ignore             ??= { enabled: false, value: true };
         draft.actions.geometry           ??= { enabled: false, x: 0, y: 0, w: 50, h: 50 };
 
         // Conditions
@@ -317,7 +319,7 @@ export class WindowRulesUI {
 
         // Actions
         box.add_child(new St.Label({ text: _('Actions'), style_class: 'bwm-rules-section-label' }));
-        for (const key of ['onAllWorkspaces', 'above', 'openOnNewWorkspace'])
+        for (const key of ['onAllWorkspaces', 'above', 'openOnNewWorkspace', 'ignore'])
             box.add_child(this._makeActionBoolRow(key, draft.actions[key]));
         box.add_child(this._makeGeomRow(draft.actions.geometry));
 
@@ -461,6 +463,7 @@ export class WindowRulesUI {
                 onAllWorkspaces:    { enabled: false, value: true },
                 above:              { enabled: false, value: true },
                 openOnNewWorkspace: { enabled: false, value: true },
+                ignore:             { enabled: false, value: true },
                 geometry: {
                     enabled: false,
                     x: wa ? Math.round(100 * (r.x - wa.x) / wa.width)  : 0,

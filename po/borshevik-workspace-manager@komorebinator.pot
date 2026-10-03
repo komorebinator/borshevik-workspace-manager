@@ -53,6 +53,10 @@ msgstr ""
 msgid "Open on new workspace"
 msgstr ""
 
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:26
+msgid "Leave alone (no tiling or moving)"
+msgstr ""
+
 #: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:87
 msgid "Window Rules"
 msgstr ""
