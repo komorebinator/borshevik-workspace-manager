@@ -1,4 +1,4 @@
-description: |
+description: "|
   GNOME Shell extension entry point. Replaces GNOME's workspace behaviour with a tiling and
   workspace-automation window manager: each workspace and monitor has two tile slots, left and
   right; a window that is maximized, fullscreen, or does not fit gets a workspace of its own,
@@ -9,6 +9,12 @@ description: |
   can stick a window to all workspaces, keep it on top, give it a fixed geometry, or open it on
   a workspace of its own; they are edited in an in-shell overlay (rules-ui).
 
+  Android's windows (Waydroid's) get a treatment of their own, because every one of them is a
+  surface the size of Android's whole display, maximized, with the app drawn on layers inside
+  it where Android placed it: while an app fills its window — Android shows it full screen, or
+  it was maximized inside Android — it has a workspace of its own like any maximized window;
+  while it floats it is left alone, on the workspace it came from (_watchAndroidWindow).
+
   While enabled it turns off Mutter's own edge tiling and takes over Super+Left/Super+Right,
   so the two cannot race; both are restored exactly as they were on disable. Automatic
   workspace creation happens on the primary monitor only; secondary monitors are tiled but
@@ -16,7 +22,21 @@ description: |
 
   State model: all per-window state lives on the Meta.Window object itself (the win._bwm*
   fields), never in Maps or index-keyed structures, so it survives workspace index shifts and
-  enable/disable cycles. A window is managed exactly when win._bwmState is set (isTracked).
+  enable/disable cycles. A window is managed exactly when win._bwmState is set (isTracked)."
+
+  Android's windows (Waydroid's) get a treatment of their own, because every one of them is a
+  surface the size of Android's whole display, maximized, with the app drawn on layers inside
+  it where Android placed it: an app Android shows full screen gets a workspace of its own like
+  any maximized window, and a floating one is left alone (_placeAndroidWindow).
+
+  While enabled it turns off Mutter's own edge tiling and takes over Super+Left/Super+Right,
+  so the two cannot race; both are restored exactly as they were on disable. Automatic
+  workspace creation happens on the primary monitor only; secondary monitors are tiled but
+  never get workspaces created for them.
+
+  State model: all per-window state lives on the Meta.Window object itself (the win._bwm*
+  fields), never in Maps or index-keyed structures, so it survives workspace index shifts and
+  enable/disable cycles. A window is managed exactly when win._bwmState is set (isTracked)."
 extends: "@Extension"
 target: "@GnomeShell"
 platform: GJS (GNOME Shell 49/50) — Clutter, GLib, Meta, Shell, St, Gio
@@ -34,7 +54,7 @@ guidelines:
   - "Chrome tab-detach: detached tab windows on Wayland never fire the 'map'/window-created signal. Fixed by late-registering them in _onGrabBegin (grab-op-begin)."
   - "150ms batch window: Chrome session-restore opens many windows simultaneously. They are collected in _pendingBatch and processed together by _flushBatch so placement decisions see the final set, not one window at a time."
   - "Every signal handler and every state-mutating method calls LOG() near its entry and at each key transition, with an action-name prefix and the relevant context (window class, computed state, target side/workspace) — e.g. LOG('tileWindow:', win.get_wm_class(), ...). This is not spelled out per individual @Function description; preserve it as a pervasive instrumentation pattern across the whole class when regenerating, not just in the functions where it happens to be mentioned."
-  - "A window is 'blocking' when it occupies both tile slots. The predicate used throughout is `win.fullscreen || win._bwmState === 'maximized'` — it reads the extension's own tracked state rather than Mutter's flags, so it agrees with whatever the extension last decided even while Mutter is mid-transition. Mutter's per-axis `maximized_horizontally`/`maximized_vertically` are read in exactly six functions, each one a place where the tracked state is not yet authoritative: _onMaximizeChange (deriving the new truth from the signal that announces it), _registerWindow and _handleNewWindow (a window can open already maximized, before _bwmState means anything), _doTile (hadState must know whether a real unmaximize call is needed before a move will take effect), _doMoveToNewWorkspace (same question after the window has landed elsewhere), and _matchesRule (rule conditions are written against Meta's own flags, so it mirrors them). `get_maximized() === Meta.MaximizeFlags.BOTH` appears once, in _adoptExistingWindows, for the same reason. A per-axis read anywhere else means the check is being written against Mutter instead of against the extension's state model, and the two will disagree during the async gaps this code spends most of its time in."
+  - "A window is 'blocking' when it occupies both tile slots. The predicate used throughout is `win.fullscreen || win._bwmState === 'maximized'` — it reads the extension's own tracked state rather than Mutter's flags, so it agrees with whatever the extension last decided even while Mutter is mid-transition. Mutter's per-axis `maximized_horizontally`/`maximized_vertically` are read in exactly seven functions, each one a place where the tracked state is not yet authoritative: _onMaximizeChange (deriving the new truth from the signal that announces it), _registerWindow and _handleNewWindow (a window can open already maximized, before _bwmState means anything), _adoptExistingWindows (a window already open at enable has no tracked state yet), _doTile (hadState must know whether a real unmaximize call is needed before a move will take effect), _doMoveToNewWorkspace (same question after the window has landed elsewhere), and _matchesRule (rule conditions are written against Meta's own flags, so it mirrors them). Meta.Window has no get_maximized() on GNOME 49/50, so no code calls it. A per-axis read anywhere else means the check is being written against Mutter instead of against the extension's state model, and the two will disagree during the async gaps this code spends most of its time in."
   - "Direction carries meaning: a workspace created for a window the user opened or maximized goes to the right of the current one and is shown; a workspace created for a window pushed out of its slot goes to the left and is not shown, and neither is one created for covered floaters. The view follows the window the user acted on, never one the extension moved out of the way."
 fields:
   - id: SNAP_PX
@@ -45,6 +65,8 @@ fields:
     type: number
     default: 20
     description: How far the pointer must travel from where a drag started before snap zones activate and a tiled window is detached, so a click on a title bar is not a drag.
+  - id: ANDROID_CLASS
+    description: "The classes of Waydroid's windows: `Waydroid` for Android's full interface and `waydroid.<package>` for each app (_isAndroid)."
   - id: LOG
     type: "(...args) => void"
     description: A no-op, or a console.log wrapper prefixed '[BWM]' while the debug-logging setting is on; follows that setting live.
@@ -83,7 +105,10 @@ fields:
     description: The id of a rule whose openOnNewWorkspace action matched a window not yet placed; _handleNewWindow then sends the window to _moveToRuleWorkspace instead of the normal placement.
   - id: win._bwmIgnored
     type: boolean
-    description: "Set on a relevant window that a rule's ignore action left alone when it opened (_isIgnored). Such a window is never registered — it has no _bwmState, so nothing places, tiles, moves or maximizes it — yet it stays relevant, so the indicator shows it and an emptied workspace counts it. The rules still apply their other actions to it, now and whenever a rule is saved."
+    description: Set on a relevant window that a rule's ignore action left alone when it opened (_isIgnored), or that is a floating Android app (_checkAndroidWindow) — for an Android app only for as long as it floats. Such a window is never registered — it has no _bwmState, so nothing places, tiles, moves or maximizes it — yet it stays relevant, so the indicator shows it and an emptied workspace counts it. The rules still apply their other actions to it, now and whenever a rule is saved.
+  - id: win._bwmAndroid
+    type: boolean
+    description: "Set on an Android window while its app fills it, registered by _takeAndroidFullScreen. Such a window keeps its workspace and size: the extension never tiles it from the keyboard or snaps it at the end of a drag, since resizing any Waydroid window resizes Android's whole display. Beside it on every watched Android window: win._bwmAndroidHandlers, the signals followed on its actor tree (_followAndroidActor), and win._bwmAndroidPending, set while a look is queued for the next frame (_scheduleAndroidCheck); on each followed actor, actor._bwmAndroidFollowed, so an actor Mutter re-adds to the tree is not followed twice. win._bwmConnected marks a window whose signals _connectWindow has connected, since an Android window can be registered more than once."
   - id: this._moveQueue
     type: "Array<{win, tileOnArrive, direction}>"
     default: "[]"
@@ -98,6 +123,9 @@ fields:
   - id: this._currentBatch
     type: "Set<Meta.Window> | null"
     description: The batch being placed right now; lets _handleNewWindow tell not-yet-placed siblings from windows that were already there.
+  - id: this._androidWindows
+    type: Set<Meta.Window>
+    description: The open Android windows being watched (_watchAndroidWindow). On disable each one's followed signals are disconnected (_unfollowAndroidWindow); a look already queued for the next frame then finds the set gone and does nothing.
   - id: this._drag
     type: "{win, monitor, startX, startY, tiledSide, originReturned?} | null"
     description: The move-drag in progress. Set before anything else when a drag starts, because Mutter unmaximizes a dragged window at once and _onUnmaximized must already know it is a drag.
@@ -115,7 +143,7 @@ fields:
     description: GNOME's own tile-left binding, cleared while the extension owns Super+Left and restored on disable; this._savedTileRight is its right-hand twin.
 functions:
   - id: _adoptExistingWindows
-    description: "At enable, takes every relevant window that is already open and that no rule leaves alone (_isIgnored) under management in place, without moving it: maximized ones as maximized (to be restored as floating, since their real prior state is unknown), the rest as floating at their current geometry. Needed because after a shell restart some windows — Chrome web apps among them — come back without the signals new windows send, and would otherwise stay untracked, so a new window opening beside them would take their workspace for empty."
+    description: "At enable, takes every relevant window that is already open and that no rule leaves alone (_isIgnored) under management in place, without moving it: maximized ones as maximized (to be restored as floating, since their real prior state is unknown), the rest as floating at their current geometry. Needed because after a shell restart some windows — Chrome web apps among them — come back without the signals new windows send, and would otherwise stay untracked, so a new window opening beside them would take their workspace for empty. An Android window is adopted only if its app fills it (_androidFillsWindow), as maximized and win._bwmAndroid, with its signals connected; a floating one is left alone; either is then watched (_watchAndroidWindow) — after it is placed, so the watch only follows its changes and moves nothing at enable."
   - id: _isRelevant
     description: "Whether the extension manages a window at all: normal windows only, not hidden from the taskbar and not on all workspaces. Dialogs, docks and sticky windows are left alone everywhere — tiling, the indicator and rules-ui."
   - id: _defer
@@ -125,13 +153,33 @@ functions:
   - id: _getLayout
     description: "The two tile slots of a workspace on a monitor, computed from the live windows every time: each slot holds the window tiled there, or the blocking window (see guidelines), which fills both. Never cached, so it cannot drift from reality."
   - id: _onWindowCreated
-    description: "Starts managing a new relevant window once its first frame is drawn, so its real initial geometry is known — unless the grab-op path registered it meanwhile, or a rule leaves it alone (_isIgnored), in which case _ignoreWindow takes it instead. The ignore rules are asked at the first frame and not at creation because a Wayland client names its app id after its window is created: at creation wm_class is still empty, so a rule on class would match nothing (Waydroid's windows slipped through this way)."
+    description: "Starts managing a new relevant window once its first frame is drawn, so its real initial geometry is known — unless the grab-op path registered it meanwhile, a rule leaves it alone (_isIgnored), in which case _ignoreWindow takes it instead, or it is Android's (_isAndroid), which _watchAndroidWindow takes. The ignore rules and the Android test are asked at the first frame and not at creation because a Wayland client names its app id after its window is created: at creation wm_class is still empty, so a test on class would match nothing (Waydroid's windows slipped through this way)."
   - id: _ignoreWindow
     description: "Marks a window a rule leaves alone (win._bwmIgnored) and applies the window rules to it (deferred), the same as for a registered window, so its other actions — on top, on all workspaces, geometry — still take effect."
   - id: _isIgnored
     description: "Whether an enabled ignore action of a rule the window matches says to leave it alone. Asked before a window is first taken under management — at its first frame, at enable, and when a grab starts on a window never announced — and nowhere else: a window already managed stays managed until it is reopened."
+  - id: _isAndroid
+    description: Whether a window is Waydroid's, by its class (ANDROID_CLASS).
+  - id: _androidFillsWindow
+    description: "Whether the app in an Android window fills it: true when the app's layers together cover the whole window, false when they cover less, null while there are none to look at yet. GNOME tells the two apart in no other way — Waydroid makes every window, floating or full screen, a maximized surface the size of Android's whole display, transparent and deaf to clicks outside the app, and draws the app on subsurfaces of it at the place Android put it; so the first surface in the window actor's tree is that background and the visible ones after it are the app. Surface actors are found by GType (MetaSurfaceActor), the class not being introspectable. Checked on GNOME 50 with Waydroid 1.6 on 2026-10-05: Settings floating had its layers at 713,181–1177,1005 of 1728×1048, full screen at 0,0–1728,1048 in two panes."
+  - id: _watchAndroidWindow
+    description: "Watches an Android window for as long as it is open: looks at it at once (_checkAndroidWindow), then again whenever its app's layers change (_followAndroidActor). Asking once at the first frame is not enough, for two reasons seen on 2026-10-05: Waydroid replaces the window when Android switches an app between floating and full screen, but the new window's first frames can still show the app at its old floating place (Play Store, maximized, showed 685,102–1277,888 three times running); and a floating app maximized inside Android may keep its window. Signals replaced a 250ms poll the same day, after counting them over two minutes of YouTube: 1751 in 126s, in bursts of up to 118 a second during animations and none at all in 91 of those seconds, against a poll that woke the shell 4 times a second all the time; signals arrive in frames GNOME draws anyway. A known gap, left as it is: when Waydroid recreates the only window of a workspace (Settings does as it opens), the workspace is empty for a moment, _leaveIfEmpty leaves it, and the replacement opens on the workspace left to — which becomes its win._bwmOrigin, so it floats back there too. Waiting before leaving was refused (no delays), and never leaving a workspace an Android window emptied was tried and dropped on 2026-10-05 as likely to cause more trouble than it solves."
+  - id: _followAndroidActor
+    description: "Follows an actor of an Android window's tree, and all below it: children added (followed in turn) and removed on every actor, and, on every surface actor, its allocation and visibility — a layer moving, resizing, or being hidden or shown, which Waydroid does without changing its size. Each brings a look at the window (_scheduleAndroidCheck). What an app draws inside a layer — video, a game, scrolling — emits none of these, so a full-screen game costs nothing while it runs. Handlers are kept on the window for _unfollowAndroidWindow, which disconnects them when the window closes or the extension is disabled."
+  - id: _unfollowAndroidWindow
+    description: Disconnects the signals followed on an Android window's tree, tolerating actors already destroyed with the window, and unmarks them so a later enable follows them again.
+  - id: _scheduleAndroidCheck
+    description: "Queues one look at an Android window before the next frame is drawn, however many signals arrive meanwhile — during an animation several layers each signal every frame. Not a delay: the look happens in the very next frame."
+  - id: _checkAndroidWindow
+    description: "One look at a watched Android window (_androidFillsWindow), acting only on a change: a full-screen one whose app stops filling it is released (_releaseAndroidWindow); any other whose app fills it is taken full screen (_takeAndroidFullScreen); a new one whose app's layers do not fill it, or are not there yet, is left alone (_ignoreWindow) until they do — the layers can attach a moment after the first frame, and their arrival is itself a change that brings the next look, so nothing waits for them. A closed window is not looked at."
+  - id: _takeAndroidFullScreen
+    description: "Registers an Android window whose app fills it like any new window (_registerWindow), marked win._bwmAndroid: being maximized, it gets a workspace of its own through the ordinary placement, which also records where it came from (win._bwmOrigin)."
+  - id: _releaseAndroidWindow
+    description: Stops managing an Android window whose app floats again inside the same window (_forgetWindow) and leaves it alone (_ignoreWindow), back on the workspace it came from if that still exists, which is shown — the user has just acted on it. The workspace it had to itself is left empty for GNOME to remove.
   - id: _registerWindow
-    description: "Takes a new window under management as floating, applies the window rules (deferred), seeds its float geometry — from the float-sizes setting for its class, centred on the work area, else from its current geometry unless it opened maximized — follows its unmanage, workspace, maximize and fullscreen changes, and queues it in the 150ms batch."
+    description: Takes a new window under management as floating, applies the window rules (deferred), seeds its float geometry — from the float-sizes setting for its class, centred on the work area, else from its current geometry unless it opened maximized — follows its unmanage, workspace, maximize and fullscreen changes (_connectWindow), and queues it in the 150ms batch.
+  - id: _connectWindow
+    description: Follows a managed window's unmanage, workspace, maximize and fullscreen changes — once per window (win._bwmConnected), since an Android window can be registered again after being released, and every handler does nothing while the window is not tracked. Used by _registerWindow, by _onGrabBegin's late registration and by _adoptExistingWindows for a full-screen Android window.
   - id: _flushBatch
     description: Places the windows of a closed batch together (_handleNewWindow), skipping any closed meanwhile.
   - id: _handleNewWindow
@@ -142,6 +190,8 @@ functions:
       The size-based placement of a new window. One that already fills more than 90% of the work area both ways is maximized (and so may get its own workspace). One that is full-height and between 20% and 80% of the width is tiled, on the half its centre is on if that slot is free, else the other; alone on the workspace it keeps its width (capped at 80%), next to a partner it fills the rest. With both slots taken it gets a new workspace, preferring an existing one to the right with a free slot. Anything else stays floating where it opened.
   - id: _onUnmanaged
     description: "When a window closes, drops all its extension state and, if it held a tile slot, lets a window displaced from exactly that slot come back (_tryReturnOrigin). Reads the slot from win._bwmTiledWs/_bwmTiledMon, since the live accessors are unreliable by then."
+  - id: _forgetWindow
+    description: Clears all of the extension's state from a window and drops it from the pending batch, so it is no longer managed — when it closes (_onUnmanaged) and when an Android app floats again (_releaseAndroidWindow).
   - id: _leaveIfEmpty
     description: "When the active workspace loses its last window — for any reason but the extension's own moves — follows the on-empty-workspace setting: go to the workspace on the left (or the one on the right if this was the leftmost, but only if that one has windows), open the overview, or do nothing."
   - id: _onActiveWorkspaceChanged
@@ -158,8 +208,9 @@ functions:
     description: |
       Restores a window after unmaximize. During a drag it just floats — Mutter unmaximizes on drag start and the drop decides. A window that was given its own workspace goes back where it came from: into its old slot if that is free and its old workspace shows nothing fullscreen, or floating onto its old workspace if it was floating. Otherwise it returns to its previous tile slot on the current workspace if that is free, and floats if not.
   - id: _onGrabBegin
-    description: |
-      Registers late a window that was never announced (see the Chrome tab-detach guideline), unless a rule leaves it alone. A move grab starts a drag, polled every 33ms by _pollDrag; a tiled window is detached only once the drag passes DRAG_THRESHOLD, not on the click. A resize grab of a tile whose partner is also tiled is remembered for a linked resize.
+    description: "|
+  Registers late a window that was never announced (see the Chrome tab-detach guideline), unless a rule leaves it alone or it is Android's, which only _checkAndroidWindow registers. A move grab starts a drag, polled every 33ms by _pollDrag; a tiled window is detached only once the drag passes DRAG_THRESHOLD, not on the click. A resize grab of a tile whose partner is also tiled is remembered for a linked resize. A grab on a full-screen Android window (win._bwmAndroid) starts neither, so it is never snapped."
+  Registers late a window that was never announced (see the Chrome tab-detach guideline), unless a rule leaves it alone or it is Android's, which only _placeAndroidWindow takes. A move grab starts a drag, polled every 33ms by _pollDrag; a tiled window is detached only once the drag passes DRAG_THRESHOLD, not on the click. A resize grab of a tile whose partner is also tiled is remembered for a linked resize. A grab on a full-screen Android window (win._bwmAndroid) starts neither, so it is never snapped."
   - id: _onGrabEnd
     description: Ends a drag (_finalizeDrag) or a linked resize (_finalizeResize).
   - id: _pollDrag
@@ -180,7 +231,7 @@ functions:
   - id: _doFloat
     description: "Floats a window at its remembered geometry, else at its class's remembered size centred on the work area. A window with neither — one that opened maximized — is centred at whatever size it settles at after unmaximizing, rather than at an arbitrary default."
   - id: _tileKeyboard
-    description: "Super+Left/Right on the focused window: pressing the side it is already tiled on floats it again, offers its slot back to a displaced window and sends it home if it has an origin; any other state tiles it to that side, remembering its float size as a manual choice."
+    description: "Super+Left/Right on the focused window: pressing the side it is already tiled on floats it again, offers its slot back to a displaced window and sends it home if it has an origin; any other state tiles it to that side, remembering its float size as a manual choice. Does nothing to a full-screen Android window (win._bwmAndroid)."
   - id: _onRestacked
     description: "After stacking changes — debounced to 80ms, since the signal fires constantly — checks every workspace and monitor that has both covering windows (tiled, maximized or fullscreen) and floating ones for floaters buried under them."
   - id: _checkCoveredFloaters
@@ -242,7 +293,7 @@ components:
     type: "@ConfigFile"
     format: GSettings schema (XML)
     src: borshevik-workspace-manager@komorebinator/schemas/org.gnome.shell.extensions.borshevik-workspace-manager.gschema.xml
-    description: "The extension's settings: the three the preferences page edits; the three keybindings (Super+Left, Super+Right, Super+R); the remembered float sizes per window class; and the window rules, which ship with three examples — Steam on a workspace of its own, picture-in-picture windows on top on every workspace in a corner, and the Collector app on top on every workspace — and one rule Borshevik needs: Android's windows left alone. Those are Waydroid's, by class `Waydroid` for Android's full interface and `waydroid.<package>` for each app, and what the extension does to a window breaks them: Android sizes its own windows and Waydroid recreates a window when Android does, so each recreation reads as a new window to place, moving it to a workspace of its own and maximizing it; a maximized Android window covers the others inside Android's single display, where Android pauses them and Waydroid then closes their windows; and resizing Android's windows changes Android's display mode, on which Android's compositor has crashed. Being a default, the rule reaches only users who have not saved rules of their own."
+    description: "The extension's settings: the three the preferences page edits; the three keybindings (Super+Left, Super+Right, Super+R); the remembered float sizes per window class; and the window rules, which ship with three examples — Steam on a workspace of its own, picture-in-picture windows on top on every workspace in a corner, and the Collector app on top on every workspace. Android's windows need no rule: what the extension does to a window breaks them — Waydroid recreates a window whenever Android changes it, so each recreation reads as a new window to place; a maximized Android window covers the others inside Android's single display, where Android pauses them and Waydroid then closes their windows; and resizing any of them changes Android's display mode, on which Android's compositor has crashed — so the extension handles them itself (_watchAndroidWindow). Until 2026-10-05 a default rule left all of them alone, but that left a full-screen Android app on the current workspace among the user's own windows, so the rule was dropped for the extension's own handling, which can tell full screen from floating."
   - id: metadata
     type: "@ConfigFile"
     src: borshevik-workspace-manager@komorebinator/metadata.json

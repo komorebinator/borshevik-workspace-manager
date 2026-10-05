@@ -5,6 +5,7 @@
 
 import Clutter from 'gi://Clutter';
 import GLib  from 'gi://GLib';
+import GObject from 'gi://GObject';
 import Meta  from 'gi://Meta';
 import Shell from 'gi://Shell';
 import St    from 'gi://St';
@@ -16,6 +17,7 @@ import { WindowRulesUI } from './window-rules-ui.js';
 let   LOG    = () => {};
 const SNAP_PX         = 32;
 const DRAG_THRESHOLD  = 20;   // px cursor must travel before snap zones activate
+const ANDROID_CLASS   = /^(Waydroid|waydroid[.].+)$/;  // Android's full interface, and each app
 
 // Window is managed by us if it has _bwmState set.
 // State lives on the window object itself — survives workspace index shifts,
@@ -32,6 +34,11 @@ const DRAG_THRESHOLD  = 20;   // px cursor must travel before snap zones activat
 // win._bwmAppliedRules  Set<uuid> — UUIDs of window rules applied at map time
 // win._bwmForceNewWs    string    — rule id requesting window opens on a dedicated workspace
 // win._bwmIgnored       bool      — a rule leaves this window alone: never registered, still relevant
+//                                   (also a floating Android app)
+// win._bwmAndroid       bool      — a full-screen Android window: registered, never tiled or snapped
+// win._bwmAndroidHandlers [obj, id][] — signals followed on an Android window's actor tree
+// win._bwmAndroidPending  bool    — a look at an Android window is queued for the next frame
+// win._bwmConnected     bool      — its signals are connected (a window can be registered twice)
 
 const isTracked = win => win._bwmState !== undefined;
 
@@ -62,6 +69,7 @@ export default class BorshevikWorkspaceManager extends Extension {
         // Batch processing for auto-tile: collect windows mapping within 150ms,
         // process together so Chrome "restore session" windows settle before placement.
         this._pendingBatch = new Set();
+        this._androidWindows = new Set();
         this._batchTimer   = null;
         this._currentBatch = null;
 
@@ -162,6 +170,9 @@ export default class BorshevikWorkspaceManager extends Extension {
             this._batchTimer = null;
         }
         this._pendingBatch.clear(); this._pendingBatch = null;
+
+        for (const win of this._androidWindows) this._unfollowAndroidWindow(win);
+        this._androidWindows.clear(); this._androidWindows = null;
 
         if (this._restackedTimer) {
             GLib.source_remove(this._restackedTimer);
@@ -473,7 +484,18 @@ export default class BorshevikWorkspaceManager extends Extension {
                     this._ignoreWindow(win);
                     continue;
                 }
-                if (win.get_maximized() === Meta.MaximizeFlags.BOTH) {
+                if (this._isAndroid(win)) {
+                    // Placed before it is watched, so the watch only follows its changes.
+                    if (!this._androidFillsWindow(win)) {
+                        this._ignoreWindow(win);
+                        this._watchAndroidWindow(win);
+                        continue;
+                    }
+                    win._bwmAndroid = true;
+                    this._connectWindow(win);
+                    this._watchAndroidWindow(win);
+                }
+                if (win.maximized_horizontally && win.maximized_vertically) {
                     win._bwmState  = 'maximized';
                     win._bwmPreMax = 'floating';
                 } else {
@@ -561,6 +583,10 @@ export default class BorshevikWorkspaceManager extends Extension {
                     this._ignoreWindow(win);
                     return;
                 }
+                if (this._isAndroid(win)) {
+                    this._watchAndroidWindow(win);
+                    return;
+                }
                 this._registerWindow(win);
             });
         };
@@ -581,6 +607,130 @@ export default class BorshevikWorkspaceManager extends Extension {
         win._bwmIgnored      = true;
         win._bwmAppliedRules = new Set();
         this._defer(() => this._applyWindowRules(win));
+    }
+
+    // ── Android (Waydroid) windows ───────────────────────────────────────────
+    //
+    // Every Waydroid window is a maximized surface the size of Android's whole
+    // display; the app is drawn on subsurfaces inside it, where Android put it.
+    // Only those layers tell a full-screen app from a floating one.
+
+    _isAndroid(win) {
+        return ANDROID_CLASS.test(win.get_wm_class() ?? '');
+    }
+
+    // true: the app's layers cover the window; false: they cover less;
+    // null: no layers attached yet.
+    _androidFillsWindow(win) {
+        const actor = win.get_compositor_private();
+        if (!actor) return null;
+        const surfaceType = GObject.type_from_name('MetaSurfaceActor');
+        const surfaces = [];
+        const walk = a => {
+            for (const c of a.get_children()) {
+                if (GObject.type_is_a(c.constructor.$gtype, surfaceType)) surfaces.push(c);
+                walk(c);
+            }
+        };
+        walk(actor);
+        const [background, ...rest] = surfaces;
+        const layers = rest.filter(s => s.visible && s.width > 1 && s.height > 1);
+        if (!background || !layers.length) return null;
+        const x1 = Math.min(...layers.map(s => s.x));
+        const y1 = Math.min(...layers.map(s => s.y));
+        const x2 = Math.max(...layers.map(s => s.x + s.width));
+        const y2 = Math.max(...layers.map(s => s.y + s.height));
+        return x1 <= 2 && y1 <= 2 && x2 >= background.width - 2 && y2 >= background.height - 2;
+    }
+
+    // Watches an Android window for as long as it is open: Waydroid replaces the
+    // window when Android switches an app between floating and full screen, but
+    // not when a floating app is maximized inside Android, and the first frames of
+    // a new window can still show the app where it was before.
+    _watchAndroidWindow(win) {
+        this._androidWindows.add(win);
+        win._bwmAndroidHandlers = [];
+        win.connect('unmanaged', () => {
+            this._androidWindows?.delete(win);
+            this._unfollowAndroidWindow(win);
+        });
+        this._followAndroidActor(win, win.get_compositor_private());
+        this._checkAndroidWindow(win);
+    }
+
+    // The app's layers come and go and move: follow every actor in the window's
+    // tree for children added and removed, and every surface for its geometry and
+    // visibility. What is drawn inside a layer emits none of these.
+    _followAndroidActor(win, actor) {
+        if (!actor || actor._bwmAndroidFollowed) return;
+        actor._bwmAndroidFollowed = true;
+        const h = win._bwmAndroidHandlers;
+        const changed = () => this._scheduleAndroidCheck(win);
+        h.push([actor, actor.connect('child-added', (_a, child) => {
+            this._followAndroidActor(win, child);
+            changed();
+        })]);
+        h.push([actor, actor.connect('child-removed', changed)]);
+        if (GObject.type_is_a(actor.constructor.$gtype, GObject.type_from_name('MetaSurfaceActor'))) {
+            h.push([actor, actor.connect('notify::allocation', changed)]);
+            h.push([actor, actor.connect('notify::visible', changed)]);
+        }
+        for (const child of actor.get_children()) this._followAndroidActor(win, child);
+    }
+
+    _unfollowAndroidWindow(win) {
+        for (const [obj, id] of win._bwmAndroidHandlers ?? []) {
+            try { obj.disconnect(id); } catch (_) {} // gone with the window
+            delete obj._bwmAndroidFollowed;
+        }
+        win._bwmAndroidHandlers = [];
+    }
+
+    // Many signals arrive per frame while layers animate: look once, before the next one.
+    _scheduleAndroidCheck(win) {
+        if (win._bwmAndroidPending) return;
+        win._bwmAndroidPending = true;
+        global.compositor.get_laters().add(Meta.LaterType.BEFORE_REDRAW, () => {
+            win._bwmAndroidPending = false;
+            if (this._androidWindows?.has(win)) this._checkAndroidWindow(win);
+            return false;
+        });
+    }
+
+    _checkAndroidWindow(win) {
+        if (!win.get_compositor_private()) return;
+        const fills = this._androidFillsWindow(win);
+        if (win._bwmAndroid) {
+            if (fills === false) this._releaseAndroidWindow(win);
+        } else if (fills === true) {
+            this._takeAndroidFullScreen(win);
+        } else if (!win._bwmIgnored) {
+            // New, with its app's layers not filling it, or not there yet: left
+            // alone until they do fill it.
+            LOG('android:', fills === null ? 'no layers yet' : 'floating', win.get_wm_class());
+            this._ignoreWindow(win);
+        }
+    }
+
+    // Registers it like any window: being maximized, it gets a workspace of its own.
+    _takeAndroidFullScreen(win) {
+        LOG('android: full screen', win.get_wm_class());
+        delete win._bwmIgnored;
+        win._bwmAndroid = true;
+        this._registerWindow(win);
+    }
+
+    // Leaves it alone again, back on the workspace it came from.
+    _releaseAndroidWindow(win) {
+        const origin = win._bwmOrigin?.ws;
+        LOG('android: floating again', win.get_wm_class(), 'origin=', origin?.index() ?? 'none');
+        this._forgetWindow(win);
+        delete win._bwmAndroid;
+        this._ignoreWindow(win);
+        if (origin && origin.index() >= 0 && origin !== win.get_workspace()) {
+            win.change_workspace(origin);
+            origin.activate_with_focus(win, global.get_current_time());
+        }
     }
 
     _registerWindow(win) {
@@ -613,14 +763,22 @@ export default class BorshevikWorkspaceManager extends Extension {
             // else: opened maximized with no saved geometry — _bwmFloatRect stays undefined
         }
 
+        this._connectWindow(win);
+
+        this._pendingBatch.add(win);
+        this._scheduleBatch();
+    }
+
+    // Follows a managed window's unmanage, workspace, maximize and fullscreen
+    // changes. Once per window: an Android window can be registered again.
+    _connectWindow(win) {
+        if (win._bwmConnected) return;
+        win._bwmConnected = true;
         win.connect('unmanaged',         () => this._onUnmanaged(win));
         win.connect('workspace-changed', () => this._onWorkspaceChanged(win));
         win.connect('notify::maximized-horizontally', () => this._onMaximizeChange(win));
         win.connect('notify::maximized-vertically',   () => this._onMaximizeChange(win));
         win.connect('notify::fullscreen',             () => this._onMaximizeChange(win));
-
-        this._pendingBatch.add(win);
-        this._scheduleBatch();
     }
 
     _scheduleBatch() {
@@ -653,7 +811,14 @@ export default class BorshevikWorkspaceManager extends Extension {
         const freedWs  = win._bwmTiledWs ?? win.get_workspace();
         const freedMon = win._bwmTiledMon ?? win.get_monitor();
 
-        // Clear all extension state from the window
+        this._forgetWindow(win);
+
+        if (freedSide && freedWs && freedMon >= 0)
+            this._defer(() => this._tryReturnOrigin(freedWs, freedSide, freedMon));
+    }
+
+    // Clears all extension state from the window: it is no longer managed.
+    _forgetWindow(win) {
         delete win._bwmState;
         delete win._bwmFloatRect;
         delete win._bwmPreMax;
@@ -667,9 +832,6 @@ export default class BorshevikWorkspaceManager extends Extension {
         delete win._bwmForceNewWs;
 
         this._pendingBatch?.delete(win);
-
-        if (freedSide && freedWs && freedMon >= 0)
-            this._defer(() => this._tryReturnOrigin(freedWs, freedSide, freedMon));
     }
 
     _leaveIfEmpty(ws) {
@@ -852,19 +1014,18 @@ export default class BorshevikWorkspaceManager extends Extension {
 
         // Chrome tab-detach creates a window that never fires `map` on Wayland.
         // Register it here so drag-to-snap works normally.
-        if (win && !isTracked(win) && !win._bwmIgnored && this._isRelevant(win) && !this._isIgnored(win)) {
+        if (win && !isTracked(win) && !win._bwmIgnored && this._isRelevant(win) && !this._isIgnored(win) &&
+            !this._isAndroid(win)) {
             LOG('grab-op-begin: late-registering', win.get_wm_class());
             win._bwmState      = 'floating';
             win._bwmPreMax     = undefined;
             win._bwmFloatRect  = undefined;
             win._bwmHandled    = false;
-            win.connect('unmanaged',         () => this._onUnmanaged(win));
-            win.connect('workspace-changed', () => this._onWorkspaceChanged(win));
-            win.connect('notify::maximized-horizontally', () => this._onMaximizeChange(win));
-            win.connect('notify::maximized-vertically',   () => this._onMaximizeChange(win));
-            win.connect('notify::fullscreen',             () => this._onMaximizeChange(win));
+            this._connectWindow(win);
         }
         if (!win || !isTracked(win)) return;
+        // Resizing a Waydroid window resizes Android's whole display: never snap one.
+        if (win._bwmAndroid) return;
 
         if (op === Meta.GrabOp.MOVING) {
             LOG('drag-begin:', win.get_wm_class());
@@ -1295,7 +1456,7 @@ export default class BorshevikWorkspaceManager extends Extension {
 
     _tileKeyboard(side) {
         const win = global.display.get_focus_window();
-        if (!win || !isTracked(win)) return;
+        if (!win || !isTracked(win) || win._bwmAndroid) return;
         if (win._bwmState === `tiled-${side}`) {
             const ws  = win.get_workspace();
             const mon = win.get_monitor();
