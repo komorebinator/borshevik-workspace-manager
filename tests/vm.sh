@@ -211,8 +211,11 @@ b = [d for d in json.load(sys.stdin)["deployments"] if d.get("booted")][0]
 print(b.get("container-image-reference-digest", ""), b.get("container-image-reference", ""))')"
     if [[ "$booted" != "$digest $transport$image" ]]; then
         echo "bringing it to $image"
-        guest_once "rpm-ostree rebase $transport$image" >"$dir/rebase.log" 2>&1 \
-            || die "rebase failed; see $dir/rebase.log"
+        # rebase refuses a reference the machine already follows: a newer build of it is an upgrade
+        local how="rebase $transport$image"
+        [[ "${booted#* }" == "$transport$image" ]] && how=upgrade
+        guest_once "rpm-ostree $how" >"$dir/rebase.log" 2>&1 \
+            || die "rpm-ostree $how failed; see $dir/rebase.log"
         rebased=1
     fi
 
