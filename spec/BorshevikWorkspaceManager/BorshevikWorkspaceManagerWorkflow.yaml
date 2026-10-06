@@ -1,5 +1,60 @@
-description: "How work is done on the Borshevik Workspace Manager: the way every one of Borshevik's own extensions is worked on (@BorshevikExtensionWorkflow), plus what its translations and settings schema ask of a change."
-extends: "@BorshevikExtensionWorkflow"
+description: "How work is done on the Borshevik Workspace Manager, one of Borshevik's own GNOME Shell extensions, in a repository of its own. There is one branch, `main`, and the maintainer works on it directly — no pull requests and no pipelines of the extension's own. A change is tried before it is committed, twice: by the agent in a test machine running the current Borshevik image with the working tree in place of the image's copy (try_in_vm), then on the author's machine, where the extension is installed per user as a link into the repository's working tree, so a fresh GNOME Shell session runs exactly what is on disk. Only then is it committed and pushed. The fact that shapes the rest is that a push to `main` is a delivery: @GnomeExtensions clones this repository's `main` (list.json names the branch) at every final-layer build of @BorshevikImage and @BorshevikNvidiaImage, so whatever `main` carries at that moment goes into the next Borshevik `:latest`, with no tag or release in between. Testing therefore happens before the push, not after it — Borshevik's own `experimental` builds read the extension's `main` too, so there is no way to try a change inside a built image without having already delivered it. From `:latest` on, the change travels with Borshevik and reaches users the way @BorshevikWorkflow moves any change. There are no versions and no release notes: the extension is not published on extensions.gnome.org, and nothing reads metadata.json's `version`."
+extends: "@DuckWorkflow"
+main_branch: main
 guidelines:
+  - "Never push to find out whether something works. `main` is read by every Borshevik build, `experimental` ones included, so a push is the moment the change reaches `:latest` and everyone following it; the only places to try a change without delivering it are a test machine and a local session."
+  - "Borshevik installs the extension by copying its directory as it stands on `main` and compiling its GSettings schemas when list.json names them — nothing else is built. Whatever else has to be compiled, translations above all, is shipped as committed: a change to its source is not finished until the compiled file is regenerated and committed alongside it."
+  - "`shell-version` in metadata.json must name the GNOME version the current Borshevik image ships. list.json does not set `forceGnomeVersion` for Borshevik's own extensions, so when Borshevik moves to a new GNOME release an extension silently stops loading in the image until its metadata is updated and pushed — check this whenever Borshevik's base changes GNOME version, not only when the extension itself changes."
   - "The compiled Russian translation under `locale/` is what the image ships, since Borshevik builds nothing but the schemas: a change to `po/ru.po` is not finished until the `.mo` is regenerated with msgfmt and committed alongside it, or the image keeps the old strings."
   - "`schemas/gschemas.compiled` is the opposite case — ignored by git and compiled at install time, both by the image build and by @BorshevikWorkspaceManagerExtension#recipes#run — so it is never committed."
+branches:
+  - id: main
+    description: "The only branch, and what ships. The maintainer commits and pushes to it directly. Borshevik's final-layer build clones it at whatever commit it holds when the build runs — including builds of Borshevik's own `experimental` — so nothing reaches it that has not already been tried in a test machine and a local session."
+channels:
+  - id: borshevik-image
+    from: main
+    description: "The only way the extension reaches anyone: installed system-wide into Borshevik images at build time. Not a channel the extension controls — it is Borshevik's `:latest` (testers; every build lands there) and then `:stable` (users; moved there by hand), as @BorshevikWorkflow declares them. The extension only feeds it, by what `main` carries when a Borshevik build runs."
+steps:
+  - id: requested
+    description: A change is wanted — a bug seen in daily use, or a request in the conversation. It is clarified, then written into the terms.
+    when: a request exists that the project's terms do not yet reflect
+  - id: specified
+    description: The change is in the spec, which is consistent, but the sources do not implement it yet.
+    when: the change is present in the terms, verify_project is clean, and the sources do not yet implement it
+    operation: "@Software#build"
+  - id: implemented
+    description: "The working tree carries the change and the spec validates, but nobody has seen it run. Before the author spends a login on it, the agent tries it in a test machine (try_in_vm), which shows whether the change does what was asked and catches what breaks — an extension that fails to load, errors in the journal — without the author. A test machine has no real GPU and not the author's own setup, so it does not replace the author's try; it makes sure that what the author tries already works. A failure sends the change back to `requested`."
+    when: the working tree carries the change, @DuckspecProject#validate passes, and the change has not been tried in a test machine since it was last edited
+    operation: "@BorshevikWorkspaceManagerWorkflow#try_in_vm"
+  - id: tried_in_vm
+    description: The change worked in a test machine as intended, but no session of the author's has run it yet — the session in use loaded the extension before the change was made. The extension's own run recipe links the working tree in and asks the author to log in again.
+    when: the change was tried in a test machine since it was last edited and worked there, and the author's running gnome-shell process started before the change was last edited
+    operation: "@Software#run"
+  - id: testing_locally
+    description: "A fresh session runs the change from the working tree, and the author uses it to see that it works — the behaviour that was asked for, and nothing around it broken. Only the author can say it does; nothing here checks it. Errors the extension throws land in the user journal, which is worth reading before calling it done."
+    when: the running gnome-shell process started after the change was last edited, and the author has not yet confirmed it works
+    operation: "@Git#commit"
+  - id: committed
+    description: The change is recorded locally and has reached no one. Pushing it is delivering it to the next Borshevik build.
+    when: local commits carry the change and are not on the remote
+    operation: "@Git#push(branch=main)"
+  - id: on_main
+    description: "The change is on main and waits for a Borshevik build to pick it up. Nothing in the extension's repository starts one: Borshevik's daily schedule does, or a build started by hand in the Borshevik repository — from its `main` (@BorshevikWorkflow#steps#on_main) or its `experimental`, both of which clone the extension's `main`. Only the final layer needs rebuilding (@BorshevikWorkflow#build-borshevik)."
+    when: main carries the change and no Borshevik image on `:latest` was built after it was pushed
+  - id: on_latest
+    description: "A Borshevik image carrying the change is on `:latest`, where testers get it. It reaches users when that build, or a later one, is promoted to `:stable` — the step @BorshevikWorkflow#steps#built_from_main, performed in the Borshevik repository, not here."
+    when: a Borshevik image on `:latest` was built after the change was pushed, and `:stable` resolves to an image built before it
+  - id: on_stable
+    description: The change reaches users through Borshevik's `:stable`.
+    when: "`:stable` resolves to a Borshevik image built after the change was pushed"
+recipes:
+  - id: try_in_vm
+    description: "Tries the working tree in a test machine running the current Borshevik `:latest`, by hand: the agent sets up the case the change is about, acts it out and looks at what the extension did. There are no scripted tests yet; what to look at is what the change was asked to do."
+    instructions:
+      - "Use Borshevik's kept test machine for extensions: `tests/test-image-in-vm.sh run --name extensions --scenarios none` (@BorshevikWorkflow#test-image-in-vm, in the Borshevik repository), started the way @BorshevikWorkflow#try_in_vm starts runs — a transient user service on the host, since a run outlasts a session's background command. It is not thrown away: it keeps what was installed in it, Android included, and each start brings it to the current `:latest` and logs the user `tester` in."
+      - "Prepare what the change needs. A change to Android's windows needs Android (@WaydroidApp): installed once in the machine as root with `/usr/libexec/borshevik/borshevik-waydroid install`, and kept current afterwards with `borshevik-waydroid upgrade`; start a session as tester (`waydroid session start`), waiting for `sys.boot_completed`."
+      - "Install the working tree for tester in place of the image's copy: copy borshevik-workspace-manager@komorebinator/ into ~tester/.local/share/gnome-shell/extensions/ — a user's copy overrides the system one — compile its schemas there, and turn on its debug-logging. Beside it install a test-only extension whose enable() sets `global.context.unsafe_mode = true`, so org.gnome.Shell.Eval answers and the shell's state — windows, workspaces, the extension's win._bwm* fields — can be read. Then restart tester's session: drop the test machine's GDM start delay and restart gdm, which logs tester in again."
+      - "Leave the overview: the session starts in it, with GNOME's welcome dialog on a first login, and in the overview windows draw no frames of their own, so the extension, which takes a window under management at its first frame, sees nothing until it closes. Escape sent twice through QMP `send-key` closes both."
+      - "Act out the cases the change is about and look at what happened: Shell.Eval for windows' workspaces and the extension's state, the extension's `[BWM]` lines in tester's journal, QMP screenshots for what the screen shows. Android is driven as root with its own commands through `lxc-attach` into the container (`am`, `cmd`, `dumpsys`), and apps are opened as tester with `waydroid app launch`; a frozen Android (Container: FROZEN) answers nothing until woken through the container service's Unfreeze. Read tester's journal for errors from the extension."
+      - "Stop the machine when the trying is done, with `systemctl poweroff` inside it, so its disk is left consistent for the next start; it is not left running between tries."
+      - "Report each case and what was seen, with a screenshot where it helps. All as intended moves the change to `tried_in_vm`; anything else is a defect to fix first."
