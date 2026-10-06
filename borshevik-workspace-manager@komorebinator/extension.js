@@ -18,6 +18,8 @@ let   LOG    = () => {};
 const SNAP_PX         = 32;
 const DRAG_THRESHOLD  = 20;   // px cursor must travel before snap zones activate
 const ANDROID_CLASS   = /^(Waydroid|waydroid[.].+)$/;  // Android's full interface, and each app
+const ANDROID_REPLACE_MS = 500; // how long a closed Android window waits for its replacement,
+                                // and a full-screen one that stopped filling it before its release
 
 // Window is managed by us if it has _bwmState set.
 // State lives on the window object itself — survives workspace index shifts,
@@ -38,6 +40,9 @@ const ANDROID_CLASS   = /^(Waydroid|waydroid[.].+)$/;  // Android's full interfa
 // win._bwmAndroid       bool      — a full-screen Android window: registered, never tiled or snapped
 // win._bwmAndroidHandlers [obj, id][] — signals followed on an Android window's actor tree
 // win._bwmAndroidPending  bool    — a look at an Android window is queued for the next frame
+// win._bwmAndroidClosed   bool    — an Android window was closed, not moved off its workspace
+// win._bwmAndroidOrigin   MetaWorkspace — where a full-screen predecessor came from, inherited
+// win._bwmAndroidRelease  number  — the timer releasing a full-screen window that stopped filling it
 // win._bwmConnected     bool      — its signals are connected (a window can be registered twice)
 
 const isTracked = win => win._bwmState !== undefined;
@@ -70,6 +75,7 @@ export default class BorshevikWorkspaceManager extends Extension {
         // process together so Chrome "restore session" windows settle before placement.
         this._pendingBatch = new Set();
         this._androidWindows = new Set();
+        this._androidGone    = []; // closed Android windows awaiting a replacement
         this._batchTimer   = null;
         this._currentBatch = null;
 
@@ -126,10 +132,7 @@ export default class BorshevikWorkspaceManager extends Extension {
             [global.workspace_manager, global.workspace_manager.connect('active-workspace-changed', () => this._onActiveWorkspaceChanged())],
             [global.workspace_manager, global.workspace_manager.connect('workspace-added', (_mgr, idx) => {
                 const ws = _mgr.get_workspace_by_index(idx);
-                const sigId = ws.connect('window-removed', (_ws, win) => {
-                    if (win._bwmMoving) return;
-                    this._defer(() => this._leaveIfEmpty(ws));
-                });
+                const sigId = ws.connect('window-removed', (_ws, win) => this._onWindowRemoved(ws, win));
                 this._wsHandles.push([ws, sigId]);
             })],
         ];
@@ -139,10 +142,7 @@ export default class BorshevikWorkspaceManager extends Extension {
         const _wsManager = global.workspace_manager;
         for (let i = 0; i < _wsManager.get_n_workspaces(); i++) {
             const ws = _wsManager.get_workspace_by_index(i);
-            const sigId = ws.connect('window-removed', (_ws, win) => {
-                if (win._bwmMoving) return;
-                this._defer(() => this._leaveIfEmpty(ws));
-            });
+            const sigId = ws.connect('window-removed', (_ws, win) => this._onWindowRemoved(ws, win));
             this._wsHandles.push([ws, sigId]);
         }
 
@@ -171,8 +171,13 @@ export default class BorshevikWorkspaceManager extends Extension {
         }
         this._pendingBatch.clear(); this._pendingBatch = null;
 
-        for (const win of this._androidWindows) this._unfollowAndroidWindow(win);
+        for (const win of this._androidWindows) {
+            this._unfollowAndroidWindow(win);
+            this._cancelAndroidRelease(win);
+        }
         this._androidWindows.clear(); this._androidWindows = null;
+        this._androidGone.forEach(g => GLib.source_remove(g.timer));
+        this._androidGone = null;
 
         if (this._restackedTimer) {
             GLib.source_remove(this._restackedTimer);
@@ -492,8 +497,8 @@ export default class BorshevikWorkspaceManager extends Extension {
                         continue;
                     }
                     win._bwmAndroid = true;
-                    this._connectWindow(win);
                     this._watchAndroidWindow(win);
+                    this._connectWindow(win);
                 }
                 if (win.maximized_horizontally && win.maximized_vertically) {
                     win._bwmState  = 'maximized';
@@ -584,7 +589,14 @@ export default class BorshevikWorkspaceManager extends Extension {
                     return;
                 }
                 if (this._isAndroid(win)) {
-                    this._watchAndroidWindow(win);
+                    // Placing it may move it to another workspace, which Mutter
+                    // forbids while a frame is painted — first-frame is emitted
+                    // during one — and aborts GNOME Shell over.
+                    this._defer(() => {
+                        if (!win.get_compositor_private() || this._androidWindows?.has(win)) return;
+                        this._claimAndroidPlace(win);
+                        this._watchAndroidWindow(win);
+                    });
                     return;
                 }
                 this._registerWindow(win);
@@ -650,9 +662,15 @@ export default class BorshevikWorkspaceManager extends Extension {
     _watchAndroidWindow(win) {
         this._androidWindows.add(win);
         win._bwmAndroidHandlers = [];
+        // Connected before the extension's own unmanaged handler, which forgets
+        // where a full-screen window came from.
         win.connect('unmanaged', () => {
             this._androidWindows?.delete(win);
-            this._unfollowAndroidWindow(win);
+            // its actors go with it, and their handlers with them
+            win._bwmAndroidHandlers = [];
+            this._cancelAndroidRelease(win);
+            win._bwmAndroidClosed = true;
+            win._bwmAndroidGoneOrigin = win._bwmAndroid ? this._androidOrigin(win) : null;
         });
         this._followAndroidActor(win, win.get_compositor_private());
         this._checkAndroidWindow(win);
@@ -678,19 +696,23 @@ export default class BorshevikWorkspaceManager extends Extension {
         for (const child of actor.get_children()) this._followAndroidActor(win, child);
     }
 
+    // On disable, for the windows still open; a closed window's actors are
+    // already destroyed, and touching them only fills the journal.
     _unfollowAndroidWindow(win) {
         for (const [obj, id] of win._bwmAndroidHandlers ?? []) {
-            try { obj.disconnect(id); } catch (_) {} // gone with the window
+            obj.disconnect(id);
             delete obj._bwmAndroidFollowed;
         }
         win._bwmAndroidHandlers = [];
     }
 
-    // Many signals arrive per frame while layers animate: look once, before the next one.
+    // Many signals arrive per frame while layers animate: look once, at the next
+    // idle — after the frame, since a look may move the window to another
+    // workspace, which Mutter forbids while a frame is painted.
     _scheduleAndroidCheck(win) {
         if (win._bwmAndroidPending) return;
         win._bwmAndroidPending = true;
-        global.compositor.get_laters().add(Meta.LaterType.BEFORE_REDRAW, () => {
+        global.compositor.get_laters().add(Meta.LaterType.IDLE, () => {
             win._bwmAndroidPending = false;
             if (this._androidWindows?.has(win)) this._checkAndroidWindow(win);
             return false;
@@ -701,14 +723,20 @@ export default class BorshevikWorkspaceManager extends Extension {
         if (!win.get_compositor_private()) return;
         const fills = this._androidFillsWindow(win);
         if (win._bwmAndroid) {
-            if (fills === false) this._releaseAndroidWindow(win);
+            if (fills === false) this._scheduleAndroidRelease(win);
+            else if (fills === true) this._cancelAndroidRelease(win);
         } else if (fills === true) {
             this._takeAndroidFullScreen(win);
         } else if (!win._bwmIgnored) {
             // New, with its app's layers not filling it, or not there yet: left
-            // alone until they do fill it.
+            // alone until they do fill it. Replacing a full-screen window, it
+            // floats again, so it goes back where that one came from.
             LOG('android:', fills === null ? 'no layers yet' : 'floating', win.get_wm_class());
             this._ignoreWindow(win);
+            if (fills === false) this._returnAndroidWindow(win, win._bwmAndroidOrigin);
+        } else if (fills === false && win._bwmAndroidOrigin) {
+            // its layers came after the first look
+            this._returnAndroidWindow(win, win._bwmAndroidOrigin);
         }
     }
 
@@ -720,16 +748,95 @@ export default class BorshevikWorkspaceManager extends Extension {
         this._registerWindow(win);
     }
 
+    // A full-screen app that stops filling its window is released only if it
+    // still floats ANDROID_REPLACE_MS later: before Waydroid recreates a window —
+    // on a theme change, say — Android draws a frame or two of it not filling
+    // the window, and a release then would move it away and back.
+    _scheduleAndroidRelease(win) {
+        if (win._bwmAndroidRelease) return;
+        win._bwmAndroidRelease = GLib.timeout_add(GLib.PRIORITY_DEFAULT, ANDROID_REPLACE_MS, () => {
+            delete win._bwmAndroidRelease;
+            if (win._bwmAndroid && this._androidWindows?.has(win) &&
+                this._androidFillsWindow(win) === false)
+                this._releaseAndroidWindow(win);
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _cancelAndroidRelease(win) {
+        if (!win._bwmAndroidRelease) return;
+        GLib.source_remove(win._bwmAndroidRelease);
+        delete win._bwmAndroidRelease;
+    }
+
     // Leaves it alone again, back on the workspace it came from.
     _releaseAndroidWindow(win) {
-        const origin = win._bwmOrigin?.ws;
+        const origin = this._androidOrigin(win);
         LOG('android: floating again', win.get_wm_class(), 'origin=', origin?.index() ?? 'none');
         this._forgetWindow(win);
         delete win._bwmAndroid;
         this._ignoreWindow(win);
-        if (origin && origin.index() >= 0 && origin !== win.get_workspace()) {
-            win.change_workspace(origin);
-            origin.activate_with_focus(win, global.get_current_time());
+        this._returnAndroidWindow(win, origin);
+    }
+
+    // Where a full-screen Android window came from: its own placement's record,
+    // or the one it inherited from the window it replaced.
+    _androidOrigin(win) {
+        return win._bwmAndroidOrigin ?? win._bwmOrigin?.ws ?? null;
+    }
+
+    _returnAndroidWindow(win, origin) {
+        delete win._bwmAndroidOrigin;
+        if (!origin || origin.index() < 0 || origin === win.get_workspace()) return;
+        win._bwmMoving = true;
+        win.change_workspace(origin);
+        delete win._bwmMoving;
+        origin.activate_with_focus(win, global.get_current_time());
+    }
+
+    // ── Android window replacement ───────────────────────────────────────────
+    //
+    // Waydroid closes an Android window and opens a new one whenever Android
+    // recreates the app's surface — a mode change, a theme change, Settings
+    // opening — always on the active workspace. A closed Android window waits
+    // ANDROID_REPLACE_MS for a window of the same app; that window is its
+    // replacement and takes its place, and the workspace it emptied is not left
+    // meanwhile.
+
+    // A workspace lost a window. Whether it was closed or moved is known only
+    // once unmanaging has finished, so this looks at the next idle.
+    _onWindowRemoved(ws, win) {
+        if (win._bwmMoving) return;
+        this._defer(() => {
+            if (win._bwmAndroidClosed && this._androidGone) this._awaitAndroidReplacement(ws, win);
+            else this._leaveIfEmpty(ws);
+        });
+    }
+
+    _awaitAndroidReplacement(ws, win) {
+        const gone = { cls: win.get_wm_class(), ws, origin: win._bwmAndroidGoneOrigin };
+        LOG('android: closed', gone.cls, 'on ws', ws.index(), '— awaiting a replacement');
+        gone.timer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, ANDROID_REPLACE_MS, () => {
+            this._androidGone.splice(this._androidGone.indexOf(gone), 1);
+            this._leaveIfEmpty(ws);
+            return GLib.SOURCE_REMOVE;
+        });
+        this._androidGone.push(gone);
+    }
+
+    // A new Android window of an app whose window just closed replaces it: it
+    // moves to that window's workspace and inherits where it came from.
+    _claimAndroidPlace(win) {
+        const i = this._androidGone.findIndex(g => g.cls === win.get_wm_class());
+        if (i < 0) return;
+        const [gone] = this._androidGone.splice(i, 1);
+        GLib.source_remove(gone.timer);
+        LOG('android: replaces a closed window', gone.cls, 'ws', gone.ws.index());
+        if (gone.origin) win._bwmAndroidOrigin = gone.origin;
+        if (gone.ws.index() >= 0 && win.get_workspace() !== gone.ws) {
+            win._bwmMoving = true;
+            win.change_workspace(gone.ws);
+            delete win._bwmMoving;
         }
     }
 
