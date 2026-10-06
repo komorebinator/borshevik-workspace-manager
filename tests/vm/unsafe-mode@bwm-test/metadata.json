@@ -1,0 +1,6 @@
+{
+  "uuid": "unsafe-mode@bwm-test",
+  "name": "Test: unsafe mode",
+  "description": "Turns on GNOME Shell's unsafe mode so a test can use Shell.Eval. Test machines only.",
+  "shell-version": ["47", "48", "49", "50"]
+}

@@ -47,14 +47,43 @@ steps:
   - id: on_stable
     description: The change reaches users through Borshevik's `:stable`.
     when: "`:stable` resolves to a Borshevik image built after the change was pushed"
+components:
+  - id: test-vm
+    type: "@ShellScript"
+    src:
+      - tests/vm.sh
+      - tests/vm/unsafe-mode@bwm-test/extension.js
+      - tests/vm/unsafe-mode@bwm-test/metadata.json
+    description: "The test machine try_in_vm uses, and everything needed to work it, in this repository: a clone of it alone is enough to try a change. One kept machine, not a throwaway one per try — it keeps what was installed in it, Android above all, which takes long to install — in ${XDG_CACHE_HOME:-~/.cache}/borshevik-workspace-manager-vm: its disk, made once from a bootc image with GNOME, standing on its own; its UEFI variables; its SSH key; and while it runs, its QMP and SPICE sockets and the local port forwarded to its SSH. The image is Borshevik's `:latest` by default, the system the extension ships in, and the only one with Android (@WaydroidApp); any other bootc image with GNOME can be given instead. Runs on the host, not in a sandbox; needs ssh, skopeo, python3, podman through run0 (for `setup` only) and the GNOME Boxes flatpak, whose qemu and UEFI firmware run the machine — KVM, q35, host CPU, 4 cores, 6 GiB, virtio disk and GPU, no window. tests/vm/unsafe-mode@bwm-test is a test-only extension installed for tester whose enable() sets `global.context.unsafe_mode = true`, so org.gnome.Shell.Eval answers and the shell's state — windows, workspaces, the extension's win._bwm* fields — can be read."
+    functions:
+      - id: setup
+        description: "`vm.sh setup [image]` — makes the machine's disk from <image> with bootc-image-builder, run through podman as root (run0 asks for the password once), with root's SSH key and a 40 GiB root; refuses if the machine exists, to be made again only after its directory is deleted."
+      - id: start
+        description: "`vm.sh start [image]` — boots the machine in a session of its own, so it outlives the command, and waits for SSH and the end of boot. Brings it to <image>'s current build: rebases to it when the booted digest differs — signed for Borshevik's images, whose policy knows their key, unverified for others — and reboots into it. Prepares the user `tester`, logged in by GDM itself: created if missing, its screen never blanking or locking, Borshevik's App Manager first run marked done so it does not open over the desktop, and the unsafe-mode helper installed and enabled. Then leaves the overview the session starts in."
+      - id: deploy
+        description: "`vm.sh deploy` — installs the working tree's borshevik-workspace-manager@komorebinator/ for tester in place of the image's copy — a user's copy overrides the system one — compiles its schemas there, enables it, turns on its debug-logging, and restarts tester's session (GDM stopped, tester logged out, settings written, GDM started), since GNOME Shell on Wayland cannot reload an extension. Then leaves the overview."
+      - id: android
+        description: "`vm.sh android` — installs Android with Borshevik's `borshevik-waydroid install`, or, when it is installed already, brings it up to date with `borshevik-waydroid upgrade`, then starts a session as tester and waits for `sys.boot_completed`. Stops with a message on an image without Borshevik's tool."
+      - id: ssh
+        description: "`vm.sh ssh [command]` — a root shell in the machine, or a command run there as root."
+      - id: droid
+        description: "`vm.sh droid <command>` — runs a command as root inside Android through `lxc-attach` into the container (`am`, `cmd`, `dumpsys`, `settings`), waking it first: a frozen Android (Container: FROZEN) answers nothing until the container service's Unfreeze."
+      - id: eval
+        description: "`vm.sh eval <js|file>` — evaluates JavaScript in tester's GNOME Shell through org.gnome.Shell.Eval and prints the result; exits 1 when the evaluation failed."
+      - id: state
+        description: "`vm.sh state` — the active workspace, the number of workspaces, whether the overview is shown, and each normal window with its workspace and what the extension made of it (full-screen Android, ignored, its _bwmState)."
+      - id: key
+        description: "`vm.sh key <keys>...` — sends keys through QMP `send-key`, each as QEMU qcodes joined by `+` (`super` standing for meta_l), a second and a half apart; stops at one QMP refuses."
+      - id: shot
+        description: "`vm.sh shot [file]` — a screenshot through QMP `screendump`, written as PNG, by default screen.png in the machine's directory; prints where."
+      - id: stop
+        description: "`vm.sh stop` — powers the machine off from inside, so its disk is left consistent, falling back to QMP quit if it has not stopped within two minutes."
 recipes:
   - id: try_in_vm
-    description: "Tries the working tree in a test machine running the current Borshevik `:latest`, by hand: the agent sets up the case the change is about, acts it out and looks at what the extension did. There are no scripted tests yet; what to look at is what the change was asked to do."
+    description: "Tries the working tree in the test machine (test-vm), by hand: the agent sets up the case the change is about, acts it out and looks at what the extension did. There are no scripted tests yet; what to look at is what the change was asked to do."
     instructions:
-      - "Use Borshevik's kept test machine for extensions: `tests/test-image-in-vm.sh run --name extensions --scenarios none` (@BorshevikWorkflow#test-image-in-vm, in the Borshevik repository), started the way @BorshevikWorkflow#try_in_vm starts runs — a transient user service on the host, since a run outlasts a session's background command. It is not thrown away: it keeps what was installed in it, Android included, and each start brings it to the current `:latest` and logs the user `tester` in."
-      - "Prepare what the change needs. A change to Android's windows needs Android (@WaydroidApp): installed once in the machine as root with `/usr/libexec/borshevik/borshevik-waydroid install`, and kept current afterwards with `borshevik-waydroid upgrade`; start a session as tester (`waydroid session start`), waiting for `sys.boot_completed`."
-      - "Install the working tree for tester in place of the image's copy: copy borshevik-workspace-manager@komorebinator/ into ~tester/.local/share/gnome-shell/extensions/ — a user's copy overrides the system one — compile its schemas there, and turn on its debug-logging. Beside it install a test-only extension whose enable() sets `global.context.unsafe_mode = true`, so org.gnome.Shell.Eval answers and the shell's state — windows, workspaces, the extension's win._bwm* fields — can be read. Then restart tester's session: drop the test machine's GDM start delay and restart gdm, which logs tester in again."
-      - "Leave the overview: the session starts in it, with GNOME's welcome dialog on a first login, and in the overview windows draw no frames of their own, so the extension, which takes a window under management at its first frame, sees nothing until it closes. Escape sent twice through QMP `send-key` closes both."
-      - "Act out the cases the change is about and look at what happened: Shell.Eval for windows' workspaces and the extension's state, the extension's `[BWM]` lines in tester's journal, QMP screenshots for what the screen shows. Android is driven as root with its own commands through `lxc-attach` into the container (`am`, `cmd`, `dumpsys`), and apps are opened as tester with `waydroid app launch`; a frozen Android (Container: FROZEN) answers nothing until woken through the container service's Unfreeze. Read tester's journal for errors from the extension."
-      - "Stop the machine when the trying is done, with `systemctl poweroff` inside it, so its disk is left consistent for the next start; it is not left running between tries."
+      - "If ${XDG_CACHE_HOME:-~/.cache}/borshevik-workspace-manager-vm has no disk.qcow2, make the machine with `tests/vm.sh setup` — it asks the author for their password once and takes a while, so say so first. Then `tests/vm.sh start`, which brings it to the current Borshevik `:latest` and logs tester in."
+      - "`tests/vm.sh deploy` to run the working tree. A change to Android's windows needs Android too: `tests/vm.sh android`."
+      - "Act out the cases the change is about and look at what happened: `vm.sh state` and `vm.sh eval` for windows' workspaces and the extension's state, the extension's `[BWM]` lines in tester's journal (`vm.sh ssh journalctl -b _UID=<tester's uid>`), `vm.sh shot` for what the screen shows. Android is driven with its own commands through `vm.sh droid` (`am`, `cmd`, `dumpsys`), and apps are opened as tester with `waydroid app launch`. The overview stops the extension from seeing new windows — they draw no frames of their own there, and it takes a window under management at its first frame — and GNOME opens it on its own when the active workspace is left empty; `vm.sh key esc` closes it. Read tester's journal for errors from the extension."
+      - "Stop the machine when the trying is done, `tests/vm.sh stop`; it is not left running between tries."
       - "Report each case and what was seen, with a screenshot where it helps. All as intended moves the change to `tried_in_vm`; anything else is a defect to fix first."
