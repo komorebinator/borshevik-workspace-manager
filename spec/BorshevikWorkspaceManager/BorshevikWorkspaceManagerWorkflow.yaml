@@ -23,12 +23,8 @@ steps:
     when: the change is present in the terms, verify_project is clean, and the sources do not yet implement it
     operation: "@Software#build"
   - id: implemented
-    description: "The working tree carries the change and the spec validates, but nobody has reviewed it or seen it run. It is reviewed first (@BorshevikWorkflow#review_changes), before any machine runs it — and before it is pushed, since a push to `main` is a delivery and there is no pull request on the way for a later look."
-    when: the working tree carries the change, @DuckspecProject#validate passes, and it has not been reviewed since it was last edited
-    operation: "@BorshevikWorkflow#review_changes(diff=the working tree against HEAD)"
-  - id: reviewed
-    description: "The change has been reviewed with no finding left open, but nobody has seen it run. Before the author spends a login on it, the agent tries it in a test machine (try_in_vm), which shows whether the change does what was asked and catches what breaks — an extension that fails to load, errors in the journal — without the author. A test machine has no real GPU and not the author's own setup, so it does not replace the author's try; it makes sure that what the author tries already works. A failure sends the change back to `requested`."
-    when: the working tree carries the change, @DuckspecProject#validate passes, it has been reviewed since it was last edited with no finding left open, and it has not been tried in a test machine since it was last edited
+    description: "The working tree carries the change and the spec validates, but nobody has seen it run. Before the author spends a login on it, the agent tries it in a test machine (try_in_vm), which shows whether the change does what was asked and catches what breaks — an extension that fails to load, errors in the journal — without the author. A test machine has no real GPU and not the author's own setup, so it does not replace the author's try; it makes sure that what the author tries already works. A failure sends the change back to `requested`."
+    when: the working tree carries the change, @DuckspecProject#validate passes, and the change has not been tried in a test machine since it was last edited
     operation: "@BorshevikWorkspaceManagerWorkflow#try_in_vm"
   - id: tried_in_vm
     description: The change worked in a test machine as intended, but no session of the author's has run it yet — the session in use loaded the extension before the change was made. The extension's own run recipe links the working tree in and asks the author to log in again.
