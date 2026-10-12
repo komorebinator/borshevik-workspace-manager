@@ -28,8 +28,8 @@ EOF
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 uuid=borshevik-workspace-manager@komorebinator
-helper=unsafe-mode@bwm-test
-dir="${XDG_CACHE_HOME:-$HOME/.cache}/borshevik-workspace-manager-vm"
+helper=unsafe-mode@borshevik-test
+dir="${XDG_CACHE_HOME:-$HOME/.cache}/borshevik-extensions-vm"
 key="$dir/id_ed25519"
 mkdir -p "$dir"
 
@@ -120,6 +120,8 @@ enable_extension() {
 import ast, sys
 cur = ast.literal_eval(sys.argv[1].removeprefix("@as "))
 print(repr(cur if sys.argv[2] in cur else cur + [sys.argv[2]]))' "$cur" "$1")"
+    # the machine is shared: a try that switched user extensions off would leave them off
+    offline_gsettings set org.gnome.shell disable-user-extensions false
 }
 log_in() {
     systemctl start gdm
@@ -138,7 +140,7 @@ cmd_setup() {
     local image="${1:-$default_image}"
     local build="$dir/build"
     [[ ! -f "$dir/disk.qcow2" ]] || die "the machine already exists; to make it again, delete $dir first"
-    [[ -f "$key" ]] || ssh-keygen -q -t ed25519 -N "" -C "borshevik-workspace-manager test machine" -f "$key"
+    [[ -f "$key" ]] || ssh-keygen -q -t ed25519 -N "" -C "Borshevik extensions test machine" -f "$key"
     rm -rf "$build"
     mkdir -p "$build/store"
     cat >"$build/config.toml" <<EOF
@@ -187,7 +189,7 @@ cmd_start() {
 
     # in a session of its own, so it outlives this script
     setsid flatpak run --filesystem="$dir" --command=qemu-system-x86_64 org.gnome.Boxes \
-        -name "bwm-test-vm" \
+        -name "borshevik-extensions-test-vm" \
         -enable-kvm -machine q35 -cpu host -smp 4 -m 6144 \
         -drive if=pflash,format=raw,readonly=on,file=/app/share/qemu/edk2-x86_64-code.fd \
         -drive "if=pflash,format=raw,file=$dir/vars.fd" \
@@ -224,7 +226,7 @@ print(b.get("container-image-reference-digest", ""), b.get("container-image-refe
     tar -C "$repo_root/tests/vm" -cf - "$helper" | guest_once "$guest_lib"'
         set -e
         id tester >/dev/null 2>&1 || useradd -m -c Tester tester
-        echo tester:bwm-test | chpasswd
+        echo tester:tester | chpasswd
         uid=$(id -u tester); home=$(getent passwd tester | cut -d: -f6)
         # on Borshevik, its App Manager would open over the desktop at a first login
         runuser -u tester -- mkdir -p "$home/.local/state/borshevik"
