@@ -196,7 +196,7 @@ components:
       - id: _onWorkspaceChanged
         description: "A window changed workspace: an echo, or only the index shift of a workspace appearing or disappearing elsewhere, changes nothing; a change the user made dispatches userMoved."
       - id: _onMaximizeChange
-        description: "Follows maximize and fullscreen changes. Both notify::maximized-horizontally and notify::maximized-vertically fire for one operation, the first while the window is maximized one way only, so the combined state alone is compared with the record and acted on once: becoming full dispatches full, ceasing unfull, a match is an echo. During a drag Mutter unmaximizes the dragged window at once, and that is left to drag, which knows it is one (drag#_onGrabBegin)."
+        description: "Follows maximize and fullscreen changes. Both notify::maximized-horizontally and notify::maximized-vertically fire for one operation, the first while the window is maximized one way only, so the combined state alone is compared with the record and acted on once: becoming full dispatches full, ceasing unfull, a match is an echo. During a drag Mutter unmaximizes the dragged window at once, and that is left to drag, which knows it is one (drag#_onGrabBegin). Entering and leaving fullscreen is logged even when it changes nothing here, as from maximized to fullscreen and back: on 2026-10-18 Chrome drew itself as a maximized window while Mutter still kept it fullscreen, its tab strip under the top bar, and the logs could not tell when that began."
       - id: _onMinimizedChange
         description: Dispatches minimized or restored as a window is minimized or comes back, however it came back (behaviour#minimize).
       - id: _onWindowRemoved

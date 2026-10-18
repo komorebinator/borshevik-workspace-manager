@@ -155,7 +155,7 @@ export class WindowTracker {
             // may count it before that
             placed: !batch,
         });
-        this._seen.set(win, { full, minimized: win.minimized });
+        this._seen.set(win, { full, fullscreen: win.fullscreen, minimized: win.minimized });
         this._connect(win);
         this._defer(() => this._rules.apply(win));
         if (batch) {
@@ -233,9 +233,12 @@ export class WindowTracker {
         if (!rec) return;
         const full = win.fullscreen || (win.maximized_horizontally && win.maximized_vertically);
         const seen = this._seen.get(win) ?? {};
+        // logged even when it changes nothing here: an app and Mutter may disagree on it
+        if (seen.fullscreen !== win.fullscreen)
+            LOG('windows:', win.fullscreen ? 'fullscreen' : 'left fullscreen', name(win));
         // both maximized-* notifies fire for one operation: act on the combined state, once
+        this._seen.set(win, { ...seen, full, fullscreen: win.fullscreen });
         if (seen.full === full) return;
-        this._seen.set(win, { ...seen, full });
         if (full === (rec.role === 'full')) return;   // the echo of the extension's own change
         if (!full && this._isDragging(win)) return;   // Mutter unmaximizes a dragged window; drag decides
         LOG('windows:', full ? 'made full' : 'no longer full', name(win));
