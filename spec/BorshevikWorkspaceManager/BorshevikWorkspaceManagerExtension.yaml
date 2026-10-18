@@ -390,13 +390,87 @@ tests:
     command: "@BorshevikWorkspaceManagerExtension#recipes#run"
     expect: "the extension is ACTIVE in `gnome-extensions info`; no errors from it in the journal since login; the changed behaviour works, and tiling, maximizing onto a new workspace and returning from it still do"
   - id: planner-scenarios
-    description: "The scenarios of `behaviour` that the planner decides, run against planner.js alone: each builds a planner#Snapshot from its `given`, hands planner#plan the intent its `when` describes, and checks the plan against its `then`. No GNOME Shell is needed, since the planner imports nothing from gi://; what depends on Mutter, the apps and Android — executor, the adapters — is left to tried-by-the-author."
+    description: "The scenarios of `behaviour` that the planner decides, run against planner.js alone: each builds a planner#Snapshot from its `given`, hands planner#plan the intent its `when` describes, and checks the plan against its `then`. No GNOME Shell is needed, since the planner imports nothing from gi://; what depends on Mutter, the apps and Android — executor, the adapters — is left to vm-scenarios. Its `verifies` is every scenario tests/scenarios.js does not skip for the planner nor give a group, a behaviour named whole when none of its scenarios is left out; a scenario added to scenarios.js, or skipped there, changes it."
     command: gjs -m tests/planner/run.js
     expect: prints one line per scenario, each ok or SKIP with its reason, ends with `<n> ok, 0 failed, <m> skipped`, and exits 0
+    verifies:
+      - behaviour#role-by-size
+      - behaviour#full-alone
+      - behaviour#two-slots
+      - behaviour#neighbours-only
+      - behaviour#displacement#displaced-left
+      - behaviour#displacement#returns-when-free
+      - behaviour#displacement#returns-to-other-side
+      - behaviour#displacement#last-first
+      - behaviour#displacement#not-torn-apart
+      - behaviour#displacement#returns-under-guests
+      - behaviour#displacement#drag-forgets
+      - behaviour#displacement#user-move-forgets
+      - behaviour#covered-guests#into-free-half
+      - behaviour#covered-guests#to-floating-left
+      - behaviour#covered-guests#new-floating-left
+      - behaviour#covered-guests#too-wide
+      - behaviour#covered-guests#together
+      - behaviour#covered-guests#partly-visible
+      - behaviour#covered-guests#floaters-overlap
+      - behaviour#covered-guests#no-return
+      - behaviour#view-follows-user#goes-with-user
+      - behaviour#view-follows-user#focus-goes-along
+      - behaviour#view-follows-user#focus-goes-along-right
+      - behaviour#view-follows-user#stays-for-others
+      - behaviour#view-follows-user#stays-for-return
+      - behaviour#view-follows-user#opened-elsewhere
+      - behaviour#view-follows-user#fullscreen-stays
+      - behaviour#view-follows-user#user-switches-at-once
+      - behaviour#going-home
+      - behaviour#minimize
+      - behaviour#user-moves
+      - behaviour#drag-and-snap
+      - behaviour#window-rules
   - id: vm-scenarios
-    description: "The same scenarios as planner-scenarios, from the same file, acted out against a real GNOME Shell in the test machine with real windows, keys and drags (@BorshevikWorkspaceManagerWorkflow#test-vm#scenarios). Where planner-scenarios checks the decisions, this checks that they happen: executor, the adapters, Mutter's own asynchrony. Run in try_in_vm, before the author's own try."
+    description: "The same scenarios as planner-scenarios, from the same file, acted out against a real GNOME Shell in the test machine with real windows, keys and drags (@BorshevikWorkspaceManagerWorkflow#test-vm#scenarios). Where planner-scenarios checks the decisions, this checks that they happen: executor, the adapters, Mutter's own asynchrony. Run in try_in_vm, before the author's own try. Its `verifies` is every scenario tests/scenarios.js does not skip for the test machine, the Chrome and Android groups included, a behaviour named whole when none of its scenarios is left out; what neither level runs — a second monitor, a dialog, and the scenarios not yet kept — is left to tried-by-the-author."
     command: tests/vm.sh scenarios
     expect: every scenario prints ok or SKIP, the run ends with no FAIL, and tester's journal shows no error from the extension
+    verifies:
+      - behaviour#role-by-size
+      - behaviour#full-alone
+      - behaviour#two-slots
+      - behaviour#neighbours-only
+      - behaviour#displacement#displaced-left
+      - behaviour#displacement#returns-when-free
+      - behaviour#displacement#returns-to-other-side
+      - behaviour#displacement#last-first
+      - behaviour#displacement#not-torn-apart
+      - behaviour#displacement#returns-under-guests
+      - behaviour#displacement#drag-forgets
+      - behaviour#displacement#user-move-forgets
+      - behaviour#covered-guests#into-free-half
+      - behaviour#covered-guests#to-floating-left
+      - behaviour#covered-guests#new-floating-left
+      - behaviour#covered-guests#too-wide
+      - behaviour#covered-guests#together
+      - behaviour#covered-guests#partly-visible
+      - behaviour#covered-guests#floaters-overlap
+      - behaviour#covered-guests#no-return
+      - behaviour#view-follows-user#goes-with-user
+      - behaviour#view-follows-user#focus-goes-along
+      - behaviour#view-follows-user#focus-goes-along-right
+      - behaviour#view-follows-user#stays-for-others
+      - behaviour#view-follows-user#stays-for-return
+      - behaviour#view-follows-user#fullscreen-stays
+      - behaviour#view-follows-user#user-switches-at-once
+      - behaviour#going-home
+      - behaviour#minimize
+      - behaviour#user-moves
+      - behaviour#drag-and-snap
+      - behaviour#emptied-workspace#go-left
+      - behaviour#emptied-workspace#leftmost
+      - behaviour#emptied-workspace#last-workspace
+      - behaviour#android-windows#full-screen-own-workspace
+      - behaviour#android-windows#floating-left-alone
+      - behaviour#android-windows#recreated-keeps-place
+      - behaviour#android-windows#back-to-floating
+      - behaviour#window-rules
 guidelines:
   - "All placement goes through the planner. An adapter (windows, drag, android, the keybindings) turns what happened into an intent; dispatch takes a snapshot of the wall, asks planner#plan for a plan, and hands it to executor#run. No adapter moves, tiles, maximizes or activates anything itself, and the planner calls nothing in Mutter. The old code had each signal handler decide and act on its own: two handlers could undo each other, nothing decided which workspace to show — `activate()` was called from nine places — and guard flags cleared at the next idle had to keep its own signals from being taken for the user's. Covered guests going unmoved, workspaces flipping back and forth by themselves and windows ending up far from where they were all appeared under that structure, and one place that decides is what lets every rule in `behaviour` hold at once."
   - Intents are handled one at a time and in order, each plan carried out to its end before the next intent is planned (dispatch, executor#run). Workspaces created and windows moved at the same time corrupt workspace indices — the old code needed a queue of moves for exactly that — and a plan made from a snapshot taken while another plan is half done decides on a wall that does not exist.

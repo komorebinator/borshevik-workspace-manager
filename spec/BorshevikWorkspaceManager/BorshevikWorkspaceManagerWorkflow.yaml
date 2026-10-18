@@ -88,7 +88,9 @@ components:
       - id: key
         description: "`vm.sh key <keys>...` — sends keys through QMP `send-key`, each as QEMU qcodes joined by `+` (`super` standing for meta_l), a second and a half apart; stops at one QMP refuses."
       - id: open
-        description: "`vm.sh open <name> [width height] [--min-width px] [--maximized] [--fullscreen]` — opens a test window as tester (tests/vm/test-window.js under gjs, copied into the machine on first use): titled <name>, with the app id org.borshevik.Test.<name> so rules and wm_class can tell test windows apart, at the given size in pixels. A window of its own per process, so closing one never takes another with it."
+        description: "`vm.sh open <name> [width height] [--min-width px [--min-width-after ms]] [--maximized] [--fullscreen] [--app id]` — opens a test window as tester (tests/vm/test-window.js under gjs, copied into the machine at every open, so a run in progress picks up an edit of it at its next window — edit it only between runs): titled <name>, with the app id org.borshevik.Test.<name>, or .<id> with --app, so rules and wm_class can tell test windows apart, at the given size in pixels. --min-width-after makes it a slow app, whose smallest width holds only that long after it was made narrower (behaviour#two-slots#narrow-remainder-slow). A window of its own per process, so closing one never takes another with it."
+      - id: launch
+        description: "`vm.sh launch <command>...` — runs any program in tester's session, detached from the SSH connection that started it: Google Chrome for the chrome scenarios, which open it with the flags tests/vm/run.js names."
       - id: drag
         description: "`vm.sh drag <x1> <y1> <x2> <y2>` — presses the left button at one point of the screen, moves the pointer to the other in steps and releases it there, through QMP input-send-event on the machine's USB tablet, so Mutter sees a real grab: a drag by a title bar, with its threshold and snap zones, can be tried only this way, since moving a window from Eval starts no grab at all. Coordinates are the screen's pixels."
       - id: point
