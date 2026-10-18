@@ -95,6 +95,10 @@ export class WindowTracker {
             LOG('windows: deciding on', name(win), 'at', why);
             // A Wayland client names its app id after its window is created: only now can a
             // rule or the Android test go by class.
+            if (this._rules.isClosed(win)) {
+                this.close(win);
+                return;
+            }
             if (this._rules.isIgnored(win)) {
                 this.ignore(win);
                 return;
@@ -130,6 +134,14 @@ export class WindowTracker {
                 attach();
             });
         }
+    }
+
+    close(win) {
+        LOG('windows: closed by a rule', name(win));
+        this._defer(() => {
+            // a real time: outside an event get_current_time() is 0, which Mutter refuses to ping with
+            if (win.get_compositor_private()) win.delete(global.display.get_current_time_roundtrip());
+        });
     }
 
     ignore(win) {
@@ -233,7 +245,7 @@ export class WindowTracker {
         if (!rec) return;
         const full = win.fullscreen || (win.maximized_horizontally && win.maximized_vertically);
         const seen = this._seen.get(win) ?? {};
-        // logged even when it changes nothing here: an app and Mutter may disagree on it
+        // logged even when it changes nothing here, so the logs show when a window was fullscreen
         if (seen.fullscreen !== win.fullscreen)
             LOG('windows:', win.fullscreen ? 'fullscreen' : 'left fullscreen', name(win));
         // both maximized-* notifies fire for one operation: act on the combined state, once
@@ -318,6 +330,10 @@ export class WindowTracker {
         for (let i = 0; i < manager.get_n_workspaces(); i++) {
             for (const win of manager.get_workspace_by_index(i).list_windows()) {
                 if (!this.isRelevant(win) || this._registry.get(win) || this._registry.isIgnored(win)) continue;
+                if (this._rules.isClosed(win)) {
+                    this.close(win);
+                    continue;
+                }
                 if (this._rules.isIgnored(win)) {
                     this.ignore(win);
                     continue;

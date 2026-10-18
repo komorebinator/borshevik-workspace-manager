@@ -42,6 +42,11 @@ export class WindowRules {
         return this._rules().some(rule => rule.actions?.ignore?.enabled && this._matches(win, rule));
     }
 
+    // Asked where isIgnored is, before it: saving a rule never closes a window already open.
+    isClosed(win) {
+        return this._rules().some(rule => rule.actions?.close?.enabled && this._matches(win, rule));
+    }
+
     ownWorkspaceRule(win) {
         const rule = this._rules().find(r =>
             r.actions?.openOnNewWorkspace?.enabled && r.actions.openOnNewWorkspace.value && this._matches(win, r));

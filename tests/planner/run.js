@@ -74,6 +74,11 @@ class World {
         return r && w.app.startsWith(r);
     }
 
+    closedByRule(w) {
+        const r = this.rules.close;
+        return r && w.app.startsWith(r);
+    }
+
     state() {
         return {
             active: this.active, n: this.workspaces.length, overview: false, wa: WA, focus: this.focus?.name ?? null,
@@ -213,6 +218,11 @@ class World {
         switch (op) {
         case 'open': {
             const w = this.open(name, arg);
+            if (this.closedByRule(w)) {
+                const ws = this.workspaces[this.active].windows;
+                ws.splice(ws.indexOf(w), 1);
+                return;
+            }
             if (this.ignored(w)) return;
             this.dispatch({ type: 'opened', wins: [w] });
             break;

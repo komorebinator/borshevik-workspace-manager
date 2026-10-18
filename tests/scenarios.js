@@ -989,4 +989,11 @@ export const scenarios = [
         when: ['open', 'Ignored', { size: TILE }],
         then: { workspaces: [{ left: 'A', right: 'B', floating: ['Ignored'] }], active: 0 },
     },
+    {
+        id: 'window-rules#closed',
+        given: { workspaces: [{ left: 'A', right: 'B' }], settings: { 'window-rules': 'close:Closed' } },
+        // gone: closed as it appears, so it is not waited for
+        when: ['open', 'Closed', { maximized: true, gone: true }],
+        then: { workspaces: [{ left: 'A', right: 'B' }], active: 0 },
+    },
 ];

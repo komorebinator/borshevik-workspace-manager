@@ -230,7 +230,8 @@ function act(action) {
         leaveOverview();
         const r = vm(...openArgs(name, arg, st.wa));
         if (!r.ok) throw new Error(`open ${name}: ${r.err}`);
-        waitFor([name]);
+        if (arg?.gone) settle();
+        else waitFor([name]);
         break;
     }
     case 'chromeQuit': {
@@ -345,6 +346,7 @@ const ruleFor = spec => {
             onAllWorkspaces: off, above: off,
             openOnNewWorkspace: { enabled: kind === 'own-workspace', value: true },
             ignore: { enabled: kind === 'ignore', value: true },
+            close: { enabled: kind === 'close', value: true },
             geometry: { enabled: false, x: 0, y: 0, w: 50, h: 50 },
         },
     }]);
