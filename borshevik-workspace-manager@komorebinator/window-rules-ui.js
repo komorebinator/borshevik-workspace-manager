@@ -190,7 +190,7 @@ export class WindowRulesUI {
 
         // Applied rules
         const rules   = this._getRules();
-        const applied = win._bwmAppliedRules ?? new Set();
+        const applied = this._ext._appliedRules(win);
         for (const rule of rules) {
             if (!applied.has(rule.id)) continue;
             this._appendRuleRow(section, rule, win);

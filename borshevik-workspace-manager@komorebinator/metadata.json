@@ -8,5 +8,9 @@
     "50"
   ],
   "version": 1,
-  "settings-schema": "org.gnome.shell.extensions.borshevik-workspace-manager"
+  "settings-schema": "org.gnome.shell.extensions.borshevik-workspace-manager",
+  "session-modes": [
+    "user",
+    "unlock-dialog"
+  ]
 }
