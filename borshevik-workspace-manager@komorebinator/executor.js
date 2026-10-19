@@ -13,12 +13,22 @@ import { LOG, name } from './log.js';
 // How long a window is watched after it is given a geometry: for Chrome putting its old position
 // back after an unmaximize, and for a window that settles wider than asked
 const WATCH_MS = 2000;
+// A width is taken as the one the window settled at only once it has held this long: a slow app
+// reports the size it had before the one just asked of it
+const SETTLE_QUIET_MS = 150;
+// How often one window may be found to have settled wider: two apps each catching up late took
+// each other's late sizes for settled ones, without end (the author's session, 2026-10-19)
+const SETTLE_LIMIT = 2;
+const SETTLE_WINDOW_MS = 5000;
 
 export class Executor {
-    constructor({ registry, settings, onSettled }) {
+    constructor({ registry, settings, onSettled, isGrabbed }) {
         this._registry = registry;
         this._settings = settings;
         this._onSettled = onSettled;
+        this._isGrabbed = isGrabbed;
+        this._watches = new Map();   // per tile, the watch of its width after it was given one
+        this._settles = new Map();   // per tile, when it was last found to have settled wider
         this._running = false;
         this._moving = new Set();
         this._wasFull = new WeakSet();   // windows just brought out of maximize or fullscreen
@@ -34,12 +44,18 @@ export class Executor {
     }
 
     destroy() {
+        for (const win of [...this._watches.keys()]) this.stopWatching(win);
         for (const id of this._timers) GLib.source_remove(id);
         this._timers.clear();
         for (const [obj, id] of this._handlers) {
             try { obj.disconnect(id); } catch {}
         }
         this._handlers = [];
+    }
+
+    _cancel(id) {
+        if (!id || !this._timers.delete(id)) return;
+        GLib.source_remove(id);
     }
 
     _timeout(ms, fn) {
@@ -210,23 +226,63 @@ export class Executor {
                 release();
             });
         }
-        if (isTile) {
-            // a window with a smallest width ends up wider than asked — at once, or once a slow
-            // app has caught up: whenever its size changes while it is watched, not after a guess
-            let id = win.connect('size-changed', () => {
-                if (rec && rec.role !== role) return;
-                const now = win.get_frame_rect();
-                if (now.width > rect.width + 4) {
-                    win.disconnect(id);
-                    id = null;
-                    LOG('executor: settled wider', name(win), now.width, '>', rect.width);
-                    this._onSettled(win, now.width);
+        if (isTile) this._watchWidth(win, rect, rec, role);
+    }
+
+    // A window with a smallest width ends up wider than asked — at once, or once a slow app has
+    // caught up: whenever its size changes while it is watched, not after a guess. One watch per
+    // window, the last one asked for. Nothing the hand does counts, and a width counts only once it
+    // has held: a late report of the size before is followed at once by the one asked, while a
+    // window that will not be narrower stays as it is.
+    _watchWidth(win, rect, rec, role) {
+        this.stopWatching(win);
+        const w = { id: 0, timer: 0, quiet: 0 };
+        this._watches.set(win, w);
+        const stop = () => this.stopWatching(win);
+        w.id = win.connect('size-changed', () => {
+            if ((rec && rec.role !== role) || this._isGrabbed?.(win)) {
+                stop();
+                return;
+            }
+            this._cancel(w.quiet);
+            w.quiet = this._timeout(SETTLE_QUIET_MS, () => {
+                w.quiet = 0;
+                const now = win.get_frame_rect().width;
+                if (now <= rect.width + 4) {
+                    if (!w.timer) stop();
+                    return;
                 }
+                stop();
+                if (this._tooOften(win)) {
+                    LOG('executor: settled wider again too soon, left as it is', name(win), now, '>', rect.width);
+                    return;
+                }
+                LOG('executor: settled wider', name(win), now, '>', rect.width);
+                this._onSettled(win, now);
             });
-            this._timeout(WATCH_MS, () => {
-                if (id !== null) { win.disconnect(id); id = null; }
-            });
-        }
+        });
+        w.timer = this._timeout(WATCH_MS, () => {
+            w.timer = 0;
+            if (!w.quiet) stop();
+        });
+    }
+
+    stopWatching(win) {
+        const w = this._watches.get(win);
+        if (!w) return;
+        this._watches.delete(win);
+        try { win.disconnect(w.id); } catch {}
+        this._cancel(w.timer);
+        this._cancel(w.quiet);
+    }
+
+    _tooOften(win) {
+        const now = GLib.get_monotonic_time() / 1000;
+        const times = (this._settles.get(win) ?? []).filter(t => now - t < SETTLE_WINDOW_MS);
+        const too = times.length >= SETTLE_LIMIT;
+        if (!too) times.push(now);
+        this._settles.set(win, times);
+        return too;
     }
 
     _float(win, op, rec, wait) {

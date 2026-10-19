@@ -26,6 +26,7 @@ export class DragController {
         this._drag = null;
         this._zone = null;
         this._resize = null;
+        this._grabbed = null;
         this._pollId = null;
         this._plainTiles = new Map();
         this._handles = [];
@@ -47,7 +48,7 @@ export class DragController {
         this._handles = [];
         if (this._pollId) GLib.source_remove(this._pollId);
         this._pollId = null;
-        this._drag = this._resize = null;
+        this._drag = this._resize = this._grabbed = null;
         this._plainTiles.clear();
         this._preview?.destroy();
         this._preview = null;
@@ -57,6 +58,11 @@ export class DragController {
         return this._drag?.win === win;
     }
 
+    // Held by the hand, whatever the grab: what it does to the window is the user's.
+    isGrabbed(win) {
+        return this._grabbed === win;
+    }
+
     _primary(win) {
         return win.get_monitor() === global.display.get_primary_monitor();
     }
@@ -64,6 +70,7 @@ export class DragController {
     _onGrabBegin(win, op) {
         if (!win) return;
         LOG('drag: grab begins', name(win), `op=${op}`);
+        this._grabbed = win;
         // Chrome's detached tab windows on Wayland never send window-created
         if (!this._registry.get(win) && !this._registry.isIgnored(win) && this._windows.isRelevant(win)
             && !this._rules.isIgnored(win) && !this.android?.isAndroid(win)) {
@@ -143,6 +150,7 @@ export class DragController {
     }
 
     _onGrabEnd(win, _op) {
+        if (this._grabbed === win) this._grabbed = null;
         if (this._drag?.win === win) {
             const { plain, monitor } = this._drag;
             const zone = this._zone;

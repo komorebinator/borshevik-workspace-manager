@@ -137,6 +137,24 @@ components:
       - id: this._running
         type: boolean
         description: True while a plan is being carried out; dispatch plans nothing until it is false again.
+      - id: WATCH_MS
+        default: 2000
+        description: "How long a window is watched after it is given a geometry: for Chrome putting its old position back after an unmaximize (_applyGeometry), and for a tile settling wider than asked (_watchWidth)."
+      - id: SETTLE_QUIET_MS
+        default: 150
+        description: How long a watched tile's width must hold before it is taken as the width it settled at (_watchWidth).
+      - id: SETTLE_LIMIT
+        default: 2
+        description: How many times one window may be found settled wider within SETTLE_WINDOW_MS before it is left as it is (_tooOften).
+      - id: SETTLE_WINDOW_MS
+        default: 5000
+        description: The span SETTLE_LIMIT counts over.
+      - id: this._watches
+        type: Map<Meta.Window, {id, timer, quiet}>
+        description: "Each watched tile's one width watch: its size-changed handler, the WATCH_MS timer and the SETTLE_QUIET_MS one under way (_watchWidth, stopWatching)."
+      - id: this._settles
+        type: Map<Meta.Window, number[]>
+        description: When each window was last found settled wider, in milliseconds, within SETTLE_WINDOW_MS (_tooOften).
     functions:
       - id: run
         description: "Carries out the operations of a plan in order and then shows the workspace it names, if any, calling `done` once everything has been applied — including what had to wait for a window to resize. A failing operation is logged and skipped (see the guidelines). Whether to show a workspace is the planner's, and so is which window to focus there: the workspace is shown with that window focused (activate_with_focus), since showing it alone leaves the focus to GNOME, which, when focus follows the mouse, gives it to whatever is under the pointer or to nothing (behaviour#view-follows-user#focus-goes-along). Nothing else here moves the view. A hold once took the view back to a fullscreen window for 1.5 s after a plan that moved windows off it, against GNOME switching to one of them by itself — a case never confirmed — but it could not tell the user's own swipe from such a switch, took the view back in the middle of the swipe's animation and left GNOME showing one workspace while its overview and indicator stood on another (2026-10-18), so it was removed (behaviour#view-follows-user#user-switches-at-once)."
@@ -154,7 +172,13 @@ components:
       - id: _unfull
         description: Brings a window out of maximize or fullscreen before it is given a tile or a floating geometry, with a plain unmaximize or unmake_fullscreen; making a window full is a plain maximize in run. Marks the window so _applyGeometry applies its rect once more on the next size-changed. It once also told GNOME Shell the change was an unmaximize, so that it animated as one, through Main.wm._prepareAnimationInfo — a private function of GNOME Shell, with no promise to stay, which logged `Error in size change accounting` at every use (2026-10-18) — and was dropped for it.
       - id: _applyGeometry
-        description: "Gives a window a rect: moves it, then resizes it, since some apps ignore the move half of a combined call. After an unmaximize Chrome restores its old position once the new geometry is applied, so the rect is applied again on the window's next size-changed, with a 2-second limit so that handler never lingers; applied only while the window still has the role it was given. A tile is watched for the same 2 seconds: the first time its size changes to a width larger than the one asked for — an app with a smallest width, at once or once a slow app has caught up — that width is reported to dispatch as a settled intent (planner#_fit). The width was once read after a fixed 400 ms instead, which a slow app outlasts (behaviour#two-slots#narrow-remainder-slow)."
+        description: "Gives a window a rect: moves it, then resizes it, since some apps ignore the move half of a combined call. After an unmaximize Chrome restores its old position once the new geometry is applied, so the rect is applied again on the window's next size-changed, with a 2-second limit so that handler never lingers; applied only while the window still has the role it was given. A tile's width is then watched (_watchWidth)."
+      - id: _watchWidth
+        description: "Watches a tile for WATCH_MS after it is given a width, for an app with a smallest width that ends up wider than asked — at once, or once a slow app has caught up; that width is reported to dispatch as a settled intent (planner#_fit). The width was once read after a fixed 400 ms instead, which a slow app outlasts (behaviour#two-slots#narrow-remainder-slow). Three rules keep the watch from taking for settled what is not, since every settled intent tiles the window and its neighbour again, which starts their watches again: one watch per window, a new width replacing the old watch (this._watches), where every plan used to add one; a change while the window is grabbed ends the watch, the hand's resize being the user's, reported by drag at its end (drag#isGrabbed); and a width counts only once it has held for SETTLE_QUIET_MS, as a late report of the size asked before is followed at once by the one asked, while a window that will not be narrower stays as it is. If one window is still found settled wider more than SETTLE_LIMIT times within SETTLE_WINDOW_MS, it is left as it is and that is logged (_tooOften). Seen on the author's machine on 2026-10-19: as the user dragged the edge between Chrome and Telegram, the watch took Telegram growing under the hand for its smallest width, and the two apps, each reporting its previous size late, then resized each other some hundred times a second until the extension was turned off."
+      - id: stopWatching
+        description: "Ends a window's width watch, if it has one: its size-changed handler and both of its timers."
+      - id: _tooOften
+        description: "Whether a window has been found settled wider SETTLE_LIMIT times already within SETTLE_WINDOW_MS (this._settles); if not, counts this time. The last guard against a loop the other rules miss: an app catching up later than SETTLE_QUIET_MS."
       - id: _float
         description: Floats a window at the rect the planner chose — its floatRect, else its app's remembered size centred on the work area; for a detached one its app's size first (planner#_stopBlocking) — else, a window that opened maximized and has neither, centred at whatever size it settles at after unmaximizing, rather than at an arbitrary default.
       - id: _restack
@@ -241,11 +265,16 @@ components:
       - id: this._plainTiles
         type: Map<Meta.Window, rect>
         description: On a secondary monitor, the geometry a window had before it was tiled there, given back when it is untiled — as GNOME's own tiling does.
+      - id: this._grabbed
+        type: Meta.Window or null
+        description: The window under a grab of any kind, for isGrabbed.
     functions:
       - id: _onGrabBegin
         description: "Registers late a window that was never announced (windows#register): Chrome's detached tab windows on Wayland never send window-created, and without this could not be snapped. Unless a rule leaves it alone or it is Android's, which only android takes. A grab's flags are masked off before its kind is looked at: Chrome's tab dragged out of its window moves with WINDOW_FLAG_UNCONSTRAINED set (op 1025), and compared whole that grab was never taken for a move — the old code registered such a window late and then never snapped it (found by the chrome scenarios, 2026-10-18). A move grab starts a drag, polled every 33ms (_poll); a resize grab of a tile is remembered for _onGrabEnd. A grab on a full Android window starts neither: resizing any Waydroid window resizes Android's whole display."
       - id: isDragging
         description: "Whether a window is being dragged right now, for windows: a dragged window's unmaximize and workspace change are the drag's, which dispatches what they mean."
+      - id: isGrabbed
+        description: "Whether the hand holds a window, whatever the grab — a move or a resize — from grab-op-begin to grab-op-end (this._grabbed): for executor#_watchWidth, which leaves what the hand does to a window to the hand."
       - id: _poll
         description: Follows the pointer across monitors. Past DRAG_THRESHOLD a tile, or a full window Mutter has just unmaximized, dispatches detached once (behaviour#drag-and-snap#detach, behaviour#going-home#drag-carries-home); near the left, right or top edge it shows the preview of that zone. There is no bottom zone.
       - id: _onGrabEnd
@@ -613,6 +642,10 @@ behaviour:
         given: "As in behaviour#two-slots#narrow-remainder, but window W is a slow app: it reaches its smallest width only a second after it is made narrower"
         when: W is tiled to the right of A
         then: "As there: once W has grown to its smallest width, A gives up just as much, and the two fill the work area without overlapping"
+      - id: resize-slow-pair
+        given: Workspace S has tiles A and B, apps slow to take a new size, Chrome and Telegram for two
+        when: The user drags the edge between them, and again at once, widening B under the hand
+        then: "Once released, A and B keep the widths the drag left them and nothing moves after: neither B growing under the hand nor a size an app reports late is taken for a window that cannot be narrower"
       - id: taken-other-free
         given: Workspace S has tile A in its left slot and its right slot free
         when: The user tiles window W to the left

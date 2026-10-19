@@ -224,6 +224,17 @@ export const scenarios = [
         },
     },
     {
+        id: 'two-slots#resize-slow-pair',
+        // the second drag while the first one's tiles are still watched, B growing under the hand
+        given: { workspaces: [{ left: 'A', right: 'B' }], steps: [['resizeEdge', 'A', 0.45, { quick: true }]] },
+        when: ['resizeEdge', 'A', 0.4],
+        then: {
+            workspaces: [{ left: 'A', right: 'B' }], active: 0,
+            check: h => Math.abs(h.rect('A').width - 0.4 * h.wa.width) > 16 ? `A is ${h.rect('A').width} wide, not the 0.4 it was dragged to`
+                : Math.abs(h.rect('A').width + h.rect('B').width - h.wa.width) <= 12 ? null : 'B does not fill what A leaves',
+        },
+    },
+    {
         id: 'two-slots#float-size-remembered',
         given: { workspaces: [{ floating: [{ name: 'W', size: [0.35, 0.45] }] }], steps: [['tile', 'W', 'left']] },
         when: ['tile', 'W', 'left'],
@@ -884,6 +895,22 @@ export const scenarios = [
             workspaces: [{ left: 'C1', right: 'B' }], active: 0,
             // Chrome puts back the position it had before maximizing once the tile is applied
             check: h => Math.abs(h.rect('C1').x - h.wa.x) <= 12 ? null : 'Chrome moved itself out of its slot',
+        },
+    },
+    {
+        // Chrome and Telegram resized each other without end in the author's session (2026-10-19)
+        id: 'two-slots#resize-slow-pair', group: 'chrome',
+        given: {
+            workspaces: [{ left: { name: 'C1', app: 'chrome' }, right: { name: 'C2', app: 'chrome' } }],
+            // the second drag while the first one's tiles are still watched
+            // the right one grows under the hand, as Telegram did
+            steps: [['resizeEdge', 'C1', 0.45, { quick: true }]],
+        },
+        when: ['resizeEdge', 'C1', 0.4],
+        then: {
+            workspaces: [{ left: 'C1', right: 'C2' }], active: 0,
+            check: h => Math.abs(h.rect('C1').width - 0.4 * h.wa.width) > 16 ? `C1 is ${h.rect('C1').width} wide, not the 0.4 it was dragged to`
+                : Math.abs(h.rect('C1').width + h.rect('C2').width - h.wa.width) <= 12 ? null : 'C2 does not fill what C1 leaves',
         },
     },
     {
