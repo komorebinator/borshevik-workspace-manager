@@ -278,6 +278,15 @@ class World {
             break;
         }
         case 'activate': this.active = this.index(name); this.tidy(); break;
+        case 'reorder': {
+            // the workspace itself moves; what refers to it, a home, still does
+            const shown = this.workspaces[this.active];
+            const [moved] = this.workspaces.splice(this.index(name), 1);
+            this.workspaces.splice(arg, 0, moved);
+            this.active = this.workspaces.indexOf(shown);
+            this.tidy();
+            break;
+        }
         case 'place': {
             const w = this.find(name);
             w.rect = { ...w.rect, x: Math.round(WA.x + arg[0] * WA.width), y: Math.round(WA.y + arg[1] * WA.height) };

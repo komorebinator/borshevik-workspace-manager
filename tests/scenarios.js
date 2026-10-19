@@ -218,7 +218,8 @@ export const scenarios = [
         when: ['resizeEdge', 'A', 0.6],
         then: {
             workspaces: [{ left: 'A', right: 'B' }], active: 0,
-            check: h => Math.abs(h.rect('A').width + h.rect('B').width - h.wa.width) <= 12
+            check: h => Math.abs(h.rect('A').width - 0.6 * h.wa.width) > 12 ? 'A was not resized'
+                : Math.abs(h.rect('A').width + h.rect('B').width - h.wa.width) <= 12
                 && h.rect('A').x + h.rect('A').width <= h.rect('B').x + 12 ? null : 'B does not fill what A leaves',
         },
     },
@@ -530,6 +531,15 @@ export const scenarios = [
         },
         when: ['unmaximize', 'W'],
         then: { workspaces: [{ left: 'X', right: 'B' }, { left: 'W' }], active: 1 },
+    },
+    {
+        id: 'going-home#home-reordered',
+        given: {
+            workspaces: [{ floating: ['X'] }, { left: 'W', right: 'B' }], active: 1,
+            steps: [['maximize', 'W'], ['reorder', 'ws-of:W', 0]],
+        },
+        when: ['unmaximize', 'W'],
+        then: { workspaces: [{ floating: ['X'] }, { left: 'W', right: 'B' }], active: 1 },
     },
     {
         id: 'going-home#unmaximize-was-floating',
@@ -995,5 +1005,26 @@ export const scenarios = [
         // gone: closed as it appears, so it is not waited for
         when: ['open', 'Closed', { maximized: true, gone: true }],
         then: { workspaces: [{ left: 'A', right: 'B' }], active: 0 },
+    },
+
+    // ── read-back-at-enable ────────────────────────────────────────────────────
+    {
+        id: 'read-back-at-enable#tiles-read-back',
+        given: { workspaces: [{ left: 'A', right: 'B' }], steps: [['reenable']] },
+        when: ['resizeEdge', 'A', 0.6],
+        then: {
+            workspaces: [{ left: 'A', right: 'B' }], active: 0,
+            check: h => Math.abs(h.rect('A').width - 0.6 * h.wa.width) > 12 ? 'A was not resized'
+                : Math.abs(h.rect('A').width + h.rect('B').width - h.wa.width) <= 12
+                && h.rect('A').x + h.rect('A').width <= h.rect('B').x + 12 ? null : 'B does not fill what A leaves',
+        },
+        skip: { planner: 'turning the extension off and on is the windows adapter\'s, not the planner\'s' },
+    },
+    {
+        id: 'read-back-at-enable#lone-tile-read-back',
+        given: { workspaces: [{ left: 'W' }], steps: [['reenable']] },
+        when: ['tile', 'W', 'left'],
+        then: { workspaces: [{ floating: ['W'] }], active: 0 },
+        skip: { planner: 'turning the extension off and on is the windows adapter\'s, not the planner\'s' },
     },
 ];

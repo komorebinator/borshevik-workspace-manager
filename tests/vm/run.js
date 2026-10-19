@@ -98,6 +98,16 @@ function shellHelper(Main) {
             return 'ok';
         },
         activate(i) { wm().get_workspace_by_index(i).activate(global.get_current_time()); return 'ok'; },
+        // as dragging a workspace in the indicator does
+        reorder(i, to) { wm().reorder_workspace(wm().get_workspace_by_index(i), to); return 'ok'; },
+        // as from Extensions; asked for one at a time, since GNOME ignores an enable it is asked
+        // for before the disable has taken effect
+        extension(on) {
+            if (on) Main.extensionManager.enableExtension(UUID);
+            else Main.extensionManager.disableExtension(UUID);
+            return 'ok';
+        },
+        extensionOn() { return String(Main.extensionManager.lookup(UUID)?.state === 1); },
         closeAll() { for (const w of wins()) if (!isAndroid(w)) w.delete(global.get_current_time()); return 'ok'; },
         hasAndroid() { return String(wins().some(isAndroid)); },
         set(key, value) {
@@ -295,16 +305,36 @@ function act(action) {
     case 'activate':
         shell(`activate(${wsIndex(name, st)})`);
         break;
+    case 'reorder':
+        shell(`reorder(${wsIndex(name, st)}, ${arg})`);
+        break;
     case 'place':
         shell(`act(${q(name)}, 'place', ${arg[0]}, ${arg[1]})`);
         break;
     case 'drag': drag(st, name, arg); break;
     case 'dragAway': drag(st, name, 'away'); break;
+    case 'reenable':
+        // turned off and on again: what it knew of the windows is gone
+        for (const on of [false, true]) {
+            shell(`extension(${on})`);
+            const start = Date.now();
+            while (shell('extensionOn()') !== String(on)) {
+                if (Date.now() - start > 10000) throw new Error(`the extension did not turn ${on ? 'on' : 'off'}`);
+                sleep(200);
+            }
+        }
+        break;
     case 'resizeEdge': {
-        // a hand on the inner edge of a tile: GTK's resize border lies just outside the frame
-        const w = st.windows.find(x => x.name === name).rect;
+        // a hand on the inner edge of a tile: GTK's resize border lies just outside the frame, so
+        // only the border of the window on top can be grabbed there — the tile beside it, if it
+        // is above, whose own inner edge is the same one
+        const me = st.windows.find(x => x.name === name);
+        const w = me.rect;
         const left = Math.abs(w.x - st.wa.x) <= 10;
-        const x1 = left ? w.x + w.width + 4 : w.x - 4;
+        const edge = left ? w.x + w.width : w.x;
+        const other = st.windows.find(x => x !== me && x.ws === me.ws && !x.min && x.z > me.z &&
+            Math.abs((left ? x.rect.x : x.rect.x + x.rect.width) - edge) <= 10);
+        const x1 = other ? (left ? edge - 4 : edge + 4) : (left ? edge + 4 : edge - 4);
         const y = Math.round(w.y + w.height / 2);
         const x2 = Math.round(left ? st.wa.x + arg * st.wa.width : st.wa.x + st.wa.width - arg * st.wa.width);
         const r = vm('drag', x1, y, x2, y, st.stage[0], st.stage[1]);

@@ -15,6 +15,7 @@ import { LOG, name } from './log.js';
 const BATCH_MS = 150;
 const RESTACK_MS = 80;
 const FIRST_FRAME_WAIT_MS = 500;
+const TILE_SIGHT_PX = 10;
 
 const sideOf = rec => (rec?.role === 'tiled-left' ? 'left' : rec?.role === 'tiled-right' ? 'right' : null);
 
@@ -151,14 +152,16 @@ export class WindowTracker {
         this._defer(() => this._rules.apply(win));
     }
 
-    register(win, { batch = true } = {}) {
+    // tile: the side adoptExisting saw it tiled on, if any
+    register(win, { batch = true, tile = null } = {}) {
         const full = win.fullscreen || (win.maximized_horizontally && win.maximized_vertically);
         const r0 = win.get_frame_rect();
         LOG('windows: register', name(win), `ws=${win.get_workspace()?.index()} full=${full}`,
-            `size=${r0.width}x${r0.height}`);
+            `size=${r0.width}x${r0.height}`, tile ? `tile=${tile}` : '');
         const rec = this._registry.track(win, {
-            role: full ? 'full' : 'floating',
+            role: full ? 'full' : tile ? `tiled-${tile}` : 'floating',
             preFull: full ? 'floating' : null,
+            tileRect: tile ? { x: r0.x, y: r0.y, width: r0.width, height: r0.height } : null,
             floatRect: this._appFloatRect(win) ?? (full ? null : { x: r0.x, y: r0.y, width: r0.width, height: r0.height }),
             lastWs: win.get_workspace(),
             lastMonitor: win.get_monitor(),
@@ -327,6 +330,7 @@ export class WindowTracker {
     // signals new windows send; they are taken where they are, without moving them.
     adoptExisting() {
         const manager = global.workspace_manager;
+        const tiles = this._tilesBySight();
         for (let i = 0; i < manager.get_n_workspaces(); i++) {
             for (const win of manager.get_workspace_by_index(i).list_windows()) {
                 if (!this.isRelevant(win) || this._registry.get(win) || this._registry.isIgnored(win)) continue;
@@ -342,9 +346,36 @@ export class WindowTracker {
                     this.android.adoptExisting(win);
                     continue;
                 }
-                this.register(win, { batch: false });
+                this.register(win, { batch: false, tile: tiles.get(win) ?? null });
                 LOG('windows: adopted', name(win), '→', this._registry.get(win).role);
             }
         }
+    }
+
+    // Read back from how they lie, nothing being known of them: tall as the work area and at its
+    // left or right edge without spanning it. One per side and workspace, the one on top.
+    _tilesBySight() {
+        const tiles = new Map();
+        const manager = global.workspace_manager;
+        const monitor = global.display.get_primary_monitor();
+        const near = (a, b) => Math.abs(a - b) <= TILE_SIGHT_PX;
+        for (let i = 0; i < manager.get_n_workspaces(); i++) {
+            const ws = manager.get_workspace_by_index(i);
+            const wa = ws.get_work_area_for_monitor(monitor);
+            const wins = global.display.sort_windows_by_stacking(ws.list_windows().filter(w =>
+                this.isRelevant(w) && w.get_monitor() === monitor && !w.is_on_all_workspaces() &&
+                !w.minimized && !w.fullscreen && !(w.maximized_horizontally && w.maximized_vertically) &&
+                !this.android?.isAndroid(w) && !this._rules.isClosed(w) && !this._rules.isIgnored(w)));
+            const taken = {};
+            for (const w of wins.reverse()) {   // top first
+                const r = w.get_frame_rect();
+                if (!near(r.y, wa.y) || !near(r.height, wa.height) || r.width >= wa.width - TILE_SIGHT_PX) continue;
+                const side = near(r.x, wa.x) ? 'left' : near(r.x + r.width, wa.x + wa.width) ? 'right' : null;
+                if (!side || taken[side]) continue;
+                taken[side] = true;
+                tiles.set(w, side);
+            }
+        }
+        return tiles;
     }
 }
