@@ -3,10 +3,12 @@
 // rules can match it. Runs as tester in the test machine under gjs.
 //
 //   gjs -m test-window.js <name> [width height] [--min-width px [--min-width-after ms]]
-//                         [--maximized] [--fullscreen] [--app id]
+//                         [--maximized] [--fullscreen] [--app id] [--stall ms]
 //
 // --min-width-after: a slow app — the smallest width holds only that long after the window was
 // made narrower than it, and until then the window takes any width it is given.
+// --stall: an app slow to start — once shown, the window answers nothing for that long, so GNOME
+// has it neither sized nor drawn (behaviour#role-by-size#slow-to-open).
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 import Gtk from 'gi://Gtk?version=4.0';
@@ -21,6 +23,7 @@ const fullscreen = flag('--fullscreen');
 const minWidth = Number(option('--min-width') ?? 0);
 const minWidthAfter = Number(option('--min-width-after') ?? 0);
 const appName = option('--app');
+const stall = Number(option('--stall') ?? 0);
 const [name, width = '400', height = '300'] = args;
 
 const app = new Gtk.Application({
@@ -52,5 +55,7 @@ app.connect('activate', () => {
     if (maximized) win.maximize();
     if (fullscreen) win.fullscreen();
     win.present();
+    // before GTK has taken the size GNOME sends: the window exists there, still 0x0, undrawn
+    if (stall) GLib.idle_add(GLib.PRIORITY_HIGH, () => { GLib.usleep(stall * 1000); return GLib.SOURCE_REMOVE; });
 });
 app.run([]);

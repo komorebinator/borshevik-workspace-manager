@@ -121,9 +121,27 @@ export class WindowTracker {
                 decide('first frame');
             });
             // A window opening on a workspace that is not shown draws no frame until it is: Chrome
-            // restoring a session, the view gone with its first window. It is not left unmanaged.
+            // restoring a session, the view gone with its first window. It is not left unmanaged —
+            // but it is judged by its size, so not before it has one: a window slow to start may
+            // still be 0x0 by then, and was left floating however it then opened.
             GLib.timeout_add(GLib.PRIORITY_DEFAULT, FIRST_FRAME_WAIT_MS, () => {
-                if (!decided && win.get_compositor_private() && this.isRelevant(win)) decide('timeout');
+                if (decided || !win.get_compositor_private() || !this.isRelevant(win)) return GLib.SOURCE_REMOVE;
+                const sized = () => {
+                    const r = win.get_frame_rect();
+                    return r.width > 0 && r.height > 0;
+                };
+                if (sized()) {
+                    decide('timeout');
+                    return GLib.SOURCE_REMOVE;
+                }
+                const id = win.connect('size-changed', () => {
+                    if (decided) {
+                        win.disconnect(id);
+                    } else if (sized()) {
+                        win.disconnect(id);
+                        this._defer(() => decide('size, after the timeout'));
+                    }
+                });
                 return GLib.SOURCE_REMOVE;
             });
         };

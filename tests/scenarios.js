@@ -18,7 +18,7 @@
 //   focused — the window with the keyboard focus;
 //   check(h) — anything else, returning an error string or null.
 //
-// Actions: ['open', name, { size, maximized, fullscreen, minWidth }], ['tile', name, side],
+// Actions: ['open', name, { size, maximized, fullscreen, minWidth, stall }], ['tile', name, side],
 // ['maximize' | 'unmaximize' | 'fullscreen' | 'unfullscreen' | 'minimize' | 'restore' | 'close'
 // | 'click', name], ['moveTo', name, index], ['activate', index], ['place', name, [x, y]],
 // ['drag', name, 'left' | 'right' | 'top' | [x, y]], ['dragAway', name], ['clickTitle', name],
@@ -912,6 +912,14 @@ export const scenarios = [
             check: h => Math.abs(h.rect('C1').width - 0.4 * h.wa.width) > 16 ? `C1 is ${h.rect('C1').width} wide, not the 0.4 it was dragged to`
                 : Math.abs(h.rect('C1').width + h.rect('C2').width - h.wa.width) <= 12 ? null : 'C2 does not fill what C1 leaves',
         },
+    },
+    {
+        id: 'role-by-size#slow-to-open',
+        given: { workspaces: [{}] },
+        // still 0x0 when FIRST_FRAME_WAIT_MS is up, as Chrome was at the author's login
+        when: ['open', 'W', { size: TILE, stall: 1.5 }],
+        then: { workspaces: [{ left: 'W' }] },
+        skip: { planner: 'when a window is judged is the windows adapter\'s, not the planner\'s' },
     },
     {
         id: 'role-by-size#session-restore', group: 'chrome',

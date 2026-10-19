@@ -209,7 +209,7 @@ components:
       - id: isRelevant
         description: "Whether the extension manages a window at all: normal windows only, not hidden from the taskbar and not on all workspaces. Dialogs, docks and sticky windows are left alone everywhere — placement, the indicator and rules-ui. Secondary monitors are the exception to the last clause: their windows are on all workspaces when GNOME keeps workspaces on the primary monitor only, and must still get the tiling that replaces GNOME's (drag, behaviour#secondary-monitors)."
       - id: _onWindowCreated
-        description: "Starts managing a new relevant window once its first frame is drawn, so its real initial geometry is known — unless it has been registered meanwhile (a grab on a window never announced, drag#_onGrabBegin), a rule closes it (rules#isClosed), which it then asks to close at the next idle, never managing it, a rule leaves it alone (rules#isIgnored), or it is Android's (android#isAndroid), which goes to android instead. The rules and the Android test are asked at the first frame and not at creation because a Wayland client names its app id after its window is created: at creation wm_class is still empty, and a test on class would match nothing — Waydroid's windows slipped through this way. Nothing is moved, or closed, from the first-frame handler (see the guidelines). A window that opens on a workspace not being shown draws no frame until it is shown, so the decision is also taken FIRST_FRAME_WAIT_MS after creation if the first frame has not come by then: Chrome restoring a session sends the view after its first window, and the windows opening behind it were left unmanaged until the user happened to look (both the old code and the first version of this one; seen in the test machine, 2026-10-18)."
+        description: "Starts managing a new relevant window once its first frame is drawn, so its real initial geometry is known — unless it has been registered meanwhile (a grab on a window never announced, drag#_onGrabBegin), a rule closes it (rules#isClosed), which it then asks to close at the next idle, never managing it, a rule leaves it alone (rules#isIgnored), or it is Android's (android#isAndroid), which goes to android instead. The rules and the Android test are asked at the first frame and not at creation because a Wayland client names its app id after its window is created: at creation wm_class is still empty, and a test on class would match nothing — Waydroid's windows slipped through this way. Nothing is moved, or closed, from the first-frame handler (see the guidelines). A window that opens on a workspace not being shown draws no frame until it is shown, so the decision is also taken FIRST_FRAME_WAIT_MS after creation if the first frame has not come by then: Chrome restoring a session sends the view after its first window, and the windows opening behind it were left unmanaged until the user happened to look (both the old code and the first version of this one; seen in the test machine, 2026-10-18). Taken then only if the window has a size, since its role is judged by it (behaviour#role-by-size); one still 0×0 is judged at its first size-changed with a size, at the next idle, unless its first frame comes first. Judged at its 0×0, a tile-shaped Chrome window restored at login was left floating (behaviour#role-by-size#slow-to-open)."
       - id: register
         description: "Takes a window under management: gives it a record (registry#track) with its role read from Mutter — the one place besides adoptExisting where Mutter's flags stand in for the record — or, at enable, the tile adoptExisting saw it to be, with what it covers as its tileRect; seeds its floatRect from its app's remembered size centred on the work area (_appFloatRect), else from its geometry unless it opened maximized, applies the window rules (rules#apply, deferred), connects its signals once (this._connected), since an Android window can be registered again after being released, and adds it to the batch. The app's size comes first because an app may open at the size it was last tiled at (behaviour#two-slots#untile-reopened-tile)."
       - id: _appFloatRect
@@ -479,7 +479,11 @@ tests:
     command: gjs -m tests/planner/run.js
     expect: prints one line per scenario, each ok or SKIP with its reason, ends with `<n> ok, 0 failed, <m> skipped`, and exits 0
     verifies:
-      - behaviour#role-by-size
+      - behaviour#role-by-size#opens-nearly-full
+      - behaviour#role-by-size#opens-tile-shaped
+      - behaviour#role-by-size#opens-other
+      - behaviour#role-by-size#not-judged-again
+      - behaviour#role-by-size#session-restore
       - behaviour#full-alone
       - behaviour#two-slots
       - behaviour#neighbours-only
@@ -517,7 +521,12 @@ tests:
     command: tests/vm.sh scenarios
     expect: every scenario prints ok or SKIP, the run ends with no FAIL, and tester's journal shows no error from the extension
     verifies:
-      - behaviour#role-by-size
+      - behaviour#role-by-size#opens-nearly-full
+      - behaviour#role-by-size#opens-tile-shaped
+      - behaviour#role-by-size#opens-other
+      - behaviour#role-by-size#not-judged-again
+      - behaviour#role-by-size#session-restore
+      - behaviour#role-by-size#slow-to-open
       - behaviour#full-alone
       - behaviour#two-slots
       - behaviour#neighbours-only
@@ -604,6 +613,10 @@ behaviour:
         given: An app restoring a session, Chrome for one, opens several windows within a fraction of a second, some of them maximized
         when: They appear
         then: "They are placed as if they had opened one after another: each maximized one gets a workspace of its own, and the others are placed by their size, without pushing one another out"
+      - id: slow-to-open
+        given: An app slow to start — Chrome restoring its session at login — opens a window that has neither drawn a frame nor got a size half a second later
+        when: It gets its size, tile-shaped
+        then: It is judged once it has a size — at its first frame, or, on a workspace not shown, which draws no frame, at its first size — by that size, and tiled like any tile-shaped window; it is not judged at its 0×0 and left floating. Seen at the author's login on 2026-10-19
   - id: full-alone
     description: "A full window — maximized or fullscreen — has its workspace to itself. When a window becomes full on a workspace of the primary monitor that holds any other managed window, guests included, it moves to a workspace of its own on the right — the right-hand neighbour if that is empty, else a new one between them — the view goes with it, and the workspace it left is its home (behaviour#going-home). The user made it full to look at it alone, and the windows it would otherwise lie on top of would be hidden from the wall. A full window the user moves themselves onto a workspace with other windows is the one exception: it stops being full there instead of being sent away (behaviour#user-moves)."
     scenarios:

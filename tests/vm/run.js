@@ -203,6 +203,7 @@ function openArgs(name, opts = {}, wa) {
     if (opts.maximized) args.push('--maximized');
     if (opts.fullscreen) args.push('--fullscreen');
     if (opts.app) args.push('--app', opts.app);
+    if (opts.stall) args.push('--stall', Math.round(opts.stall * 1000));
     return args;
 }
 
