@@ -1007,6 +1007,56 @@ export const scenarios = [
         then: { workspaces: [{ left: 'A', right: 'B' }], active: 0 },
     },
 
+    // ── indicator ──────────────────────────────────────────────────────────────
+    {
+        id: 'indicator#icons-follow-window',
+        given: { workspaces: [{ floating: ['A', 'X'] }, { floating: ['B'] }], active: 0 },
+        when: ['sendTo', 'A', 1],
+        then: {
+            workspaces: [{ floating: ['X'] }, { floating: ['A', 'B'] }], active: 0,
+            check: h => {
+                const icons = n => h.panel.find(b => b.num === n)?.icons;
+                return icons(1) === 1 && icons(2) === 2 ? null : `the buttons show ${icons(1)} and ${icons(2)} icons`;
+            },
+        },
+        skip: { planner: 'the indicator is not the planner\'s' },
+    },
+    {
+        id: 'indicator#drag-between',
+        given: { workspaces: [{ floating: ['A'] }, { floating: ['B'] }, { floating: ['C'] }, { floating: ['D'] }], active: 0 },
+        when: ['dragWs', 0, { between: [2, 3] }],
+        then: { workspaces: [{ floating: ['B'] }, { floating: ['C'] }, { floating: ['A'] }, { floating: ['D'] }], active: 2 },
+        skip: { planner: 'the indicator is not the planner\'s' },
+    },
+    {
+        id: 'indicator#drop-away-cancels',
+        given: { workspaces: [{ floating: ['A'] }, { floating: ['B'] }, { floating: ['C'] }, { floating: ['D'] }], active: 0 },
+        when: ['dragWs', 0, 'away'],
+        then: { workspaces: [{ floating: ['A'] }, { floating: ['B'] }, { floating: ['C'] }, { floating: ['D'] }], active: 0 },
+        skip: { planner: 'the indicator is not the planner\'s' },
+    },
+    {
+        id: 'indicator#escape-cancels',
+        given: { workspaces: [{ floating: ['A'] }, { floating: ['B'] }, { floating: ['C'] }, { floating: ['D'] }], active: 0 },
+        when: ['dragWs', 0, { between: [2, 3] }],
+        then: { workspaces: [{ floating: ['A'] }, { floating: ['B'] }, { floating: ['C'] }, { floating: ['D'] }], active: 0 },
+        skip: { vm: 'a drag cannot be held while a key is sent', planner: 'the indicator is not the planner\'s' },
+    },
+    {
+        id: 'indicator#plus-into-gap',
+        given: { workspaces: [{ floating: ['A'] }, { floating: ['B'] }], active: 0 },
+        when: ['dragWs', 'plus', { between: [0, 1] }],
+        then: { workspaces: [{ floating: ['A'] }, {}, { floating: ['B'] }], active: 1 },
+        skip: { planner: 'the indicator is not the planner\'s' },
+    },
+    {
+        id: 'indicator#no-rebuild-mid-drag',
+        given: { workspaces: [{ floating: ['A'] }, { floating: ['B'] }], active: 0 },
+        when: ['open', 'C'],
+        then: { workspaces: [{ floating: ['A', 'C'] }, { floating: ['B'] }] },
+        skip: { vm: 'a window cannot be opened while a drag is held', planner: 'the indicator is not the planner\'s' },
+    },
+
     // ── read-back-at-enable ────────────────────────────────────────────────────
     {
         id: 'read-back-at-enable#tiles-read-back',

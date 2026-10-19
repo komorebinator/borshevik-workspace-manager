@@ -2,7 +2,9 @@
 // (tests/vm/run.js, tests/planner/run.js): which workspace each window is on, whether it fills a
 // half, the whole work area or neither, whether it is minimized, which workspace is shown.
 //
-// A state is { active, n, overview, wa, focus, windows: [{ name, ws, rect, max, fs, min, z }] }.
+// A state is { active, n, overview, wa, focus, windows: [{ name, ws, rect, max, fs, min, z }], panel },
+// panel being the indicator's workspace buttons as shown, [{ num, icons, plus, x, y, w, h }]: the
+// test machine's only, the planner having no indicator.
 import { helpers } from './scenarios.js';
 
 export function role(w, wa, tol = 10) {
@@ -72,7 +74,7 @@ function view(st, before, initial) {
     };
     const changed = (s, n, what) => helpers.sameRect(rectOf(st, n), rectOf(s, n)) ? null : `${n} moved or resized ${what}`.trim();
     return {
-        wa: st.wa, overview: st.overview, active: st.active,
+        wa: st.wa, overview: st.overview, active: st.active, panel: st.panel ?? [],
         rect: n => rectOf(st, n), win,
         windowsOn: i => st.windows.filter(w => w.ws === i),
         share: (w, h) => ({ width: w * st.wa.width, height: h * st.wa.height }),

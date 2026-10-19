@@ -344,14 +344,61 @@ components:
   - id: indicator
     type: "@View"
     src: borshevik-workspace-manager@komorebinator/indicator.js
-    description: "The panel indicator that replaces the Activities button: the wall at a glance, one button per workspace with its windows' icons. It shows and switches; it places nothing."
+    description: "The panel indicator that replaces the Activities button: the wall at a glance, one button per workspace with its windows' icons (behaviour#indicator). It shows and switches; it places nothing. Reordering the workspaces by dragging a button is workspace-drag's."
+    fields:
+      - id: this._buttons
+        type: "Array<{actor: St.Button, bg: St.Bin, ws: Meta.Workspace, plus: boolean}>"
+        description: "The workspace buttons as last built, in the order shown, for workspace-drag: each with its background, which a drag clones, the workspace it stands for, and whether it is the '+' of the last, empty one."
+      - id: this._drag
+        type: workspace-drag or null
+        description: "The drag under way, if any. While it is set no rebuild happens: _update would destroy the very buttons it moves."
+      - id: this._stale
+        type: boolean
+        description: A rebuild was asked for during a drag, to be done as it ends.
+      - id: this._wsHandles
+        type: Array<[Meta.Workspace, handler id]>
+        description: The window-added and window-removed handlers on every workspace, so a window moving between workspaces rebuilds the indicator even when nothing else changes.
     functions:
+      - id: enable
+        description: "Hides the Activities button, puts the indicator first in the panel's left box, and follows what changes the wall as it is shown: workspaces added, removed, reordered or switched, windows arriving on and leaving each workspace (this._wsHandles, connected for each workspace as it is added), windows appearing or going (Shell.WindowTracker's tracked-windows-changed), the overview, for the logo's highlight, and the session mode, for the lock screen."
+      - id: refresh
+        description: "Called by dispatch after a plan has run: a window changing role — tiled, made full, floated — reorders its workspace's icons, and Mutter sends nothing the indicator follows for it."
       - id: _schedule
-        description: Batches rebuilds to the next idle whenever workspaces, windows or the overview change.
+        description: Batches rebuilds to the next idle. During a drag it only marks the indicator stale (this._stale), and the drag's end rebuilds it.
       - id: _update
-        description: Rebuilds the indicator. First a logo button that toggles the overview and is highlighted while the overview is open; then one button per workspace, numbered, with the icons of its windows — full ones first, then left, right, floating; greyed out on inactive workspaces. Empty workspaces are left out, except the active one and the last, which shows a '+' instead of icons. Clicking a button switches to it; dragging one onto another reorders the workspaces; dragging the '+' onto a workspace puts the empty workspace in that place and switches to it; Escape cancels a drag.
+        description: Rebuilds the indicator. First a logo button that toggles the overview and is highlighted while the overview is open; then one button per workspace, numbered, with the icons of its windows — full ones first, then left, right, floating; greyed out on inactive workspaces. Empty workspaces are left out, except the active one and the last, which shows a '+' instead of icons. Clicking a button switches to it; pressing one hands the press to workspace-drag, which tells a drag from a click (this._buttons).
       - id: _onSessionModeUpdated
-        description: "Hides the indicator while the screen is locked and shows it again on unlock. The extension stays enabled on the lock screen (metadata's session-modes), and the panel stays visible there: without this the icons of every open app, workspace by workspace, would be on show to anyone at the locked machine."
+        description: "Hides the indicator while the screen is locked and shows it again on unlock, cancelling a drag under way. The extension stays enabled on the lock screen (metadata's session-modes), and the panel stays visible there: without this the icons of every open app, workspace by workspace, would be on show to anyone at the locked machine."
+      - id: _dragEnded
+        description: "workspace-drag's callback at its end: forgets the drag and rebuilds if the indicator went stale meanwhile or the drag really started — the pressed button had its release taken by the drag (workspace-drag#_end), and whatever the drag moved goes back with a rebuild."
+    components:
+      - id: workspace-drag
+        type: "@Module"
+        src: borshevik-workspace-manager@komorebinator/workspace-drag.js
+        description: "One drag of a workspace's button in the indicator, from the press to its end (behaviour#indicator): the gesture, the gap it opens, and the reorder it ends in. Made by the indicator for each press on a button, it follows the press's events (_onEvent) until the button is released or Escape is pressed, and then calls back, so the indicator rebuilds if it went stale meanwhile."
+        fields:
+          - id: DRAG_THRESHOLD_PX
+            default: 6
+            description: How far the pointer must move with the button held before a press is a drag rather than a click.
+          - id: GAP_MS
+            default: 150
+            description: How long the buttons take to move apart for the gap, or back.
+          - id: OUTLINE_PX
+            default: 2
+            description: The width of the outline around the dragged button, the border of stylesheet's .bwm-ws-dragged, by which the frame is set off so what it holds stays where the button was. Only what the button shows — its number and icons — is cloned to follow the pointer; the frame, a St.Bin carrying that class, gives it the button's shape with a background and outline of its own, the same whichever workspace is dragged. Cloning the button's background as well let the active workspace's, lighter still under the pointer, swallow the outline (seen by the author, 2026-10-19).
+        functions:
+          - id: _onEvent
+            description: "The events of the press, until it ends. Until the drag starts they are the stage's captured events, seen before the buttons see them. A motion past DRAG_THRESHOLD_PX starts the drag: an actor of the drag's own, 0×0 in the UI group, takes the pointer and keyboard (Main.pushModal), as GNOME's own drags do, and from then on its plain events are listened to — a grab has no capture phase. Without the grab a release over a window went to that window's app and the drag never saw it end: it stayed open and swallowed the next press on the indicator (seen in the test machine, 2026-10-19; the old code had the same flaw). The dragged button's background is cloned to follow the pointer along the panel and the button itself is left as an empty space; every motion after that moves the clone and the gap (_insertionAt, _openGap). The release drops the workspace into the gap, or cancels if the pointer is away from the indicator; Escape cancels; a motion with the button up ends it too, its release having been missed. A press that never became a drag is left to the button's click."
+          - id: _insertionAt
+            description: "Where the workspace would go for a pointer at x: the number of the other buttons whose middle the dragged button's left edge has passed, the dragged button centred on the pointer and the others measured where they stand with it taken out of the row, so the gap moving does not move the answer. A button is passed, and the gap opens beyond it, once the dragged one covers more than half of it, as with tabs; measuring by the pointer instead put the gap one button too far when dragging right (seen in the test machine, 2026-10-19). Never after the '+', which stays last."
+          - id: _openGap
+            description: "Moves the other buttons, easing over GAP_MS, so a space the dragged button's width is open at the insertion point: each is shifted by the width of the dragged one if it is after the insertion point and the dragged one was not, or back by it if the dragged one was after it and it now is not."
+          - id: _drop
+            description: "Puts the dragged workspace where the gap is, with Mutter's reorder_workspace: before the workspace whose button follows the gap, or after the one before it when the gap is last — by the workspaces themselves, since the indicator leaves empty ones out and its buttons are not numbered like the workspaces. Nothing happens when the gap is where the button was. The '+' dropped this way switches to the empty workspace it put there. A workspace GNOME removed during the drag is not reordered."
+          - id: _end
+            description: "Ends the press either way, once, logging why: stops listening, lets the pointer go and destroys the actor that held it, lets the pressed button go without a click (fake_release) if a drag took its release, destroys the clone, puts the buttons back without easing, since a rebuild follows, and calls back the indicator with whether a drag happened."
+          - id: cancel
+            description: Ends the drag without dropping anything, for the indicator when it is disabled or the screen locks mid-drag (_end).
   - id: rules-ui
     type: "@View"
     src: borshevik-workspace-manager@komorebinator/window-rules-ui.js
@@ -480,6 +527,10 @@ tests:
       - behaviour#android-windows#recreated-keeps-place
       - behaviour#android-windows#back-to-floating
       - behaviour#window-rules
+      - behaviour#indicator#icons-follow-window
+      - behaviour#indicator#drag-between
+      - behaviour#indicator#drop-away-cancels
+      - behaviour#indicator#plus-into-gap
       - behaviour#read-back-at-enable
 guidelines:
   - "All placement goes through the planner. An adapter (windows, drag, android, the keybindings) turns what happened into an intent; dispatch takes a snapshot of the wall, asks planner#plan for a plan, and hands it to executor#run. No adapter moves, tiles, maximizes or activates anything itself, and the planner calls nothing in Mutter. The old code had each signal handler decide and act on its own: two handlers could undo each other, nothing decided which workspace to show — `activate()` was called from nine places — and guard flags cleared at the next idle had to keep its own signals from being taken for the user's. Covered guests going unmoved, workspaces flipping back and forth by themselves and windows ending up far from where they were all appeared under that structure, and one place that decides is what lets every rule in `behaviour` hold at once."
@@ -962,6 +1013,33 @@ behaviour:
         given: Workspace S has tiles A and B, and a rule closes windows of app X
         when: A window of X opens, maximized
         then: "It is closed as it appears: it gets no workspace of its own, nothing on S moves, and the view stays on S"
+  - id: indicator
+    description: "The panel indicator shows the wall as it is at every moment — each workspace's button with the icons of the windows on it — and lets the user reorder it. A workspace is reordered by dragging its button and inserting it between two others, as tabs are reordered: the buttons around the insertion point move apart to open a gap where it will go, so where it lands is seen before it is dropped. Dropping it on another button, as before, gave no such sign, and dragging right left it after the target rather than in its place (issue #4). A drag the user takes back — Escape, or a release away from the indicator — changes nothing. The '+' of the last, empty workspace can be dragged the same way, to put an empty workspace in the gap and switch to it. While a drag is under way the indicator is not rebuilt, whatever changes meanwhile; it catches up as the drag ends."
+    scenarios:
+      - id: icons-follow-window
+        given: Workspace S holds windows A and X, workspace T holds window B, and the view is on S
+        when: A is moved to T without the view following it, as the extension moves a guest off or another app moves a window
+        then: At once T's button shows two icons and S's one
+      - id: drag-between
+        given: Four workspaces, holding A, B, C and D in that order, the view on the first
+        when: The user drags the first workspace's button and drops it between the third and the fourth
+        then: The workspaces are in the order B, C, A, D, and the view stays on A's
+      - id: drop-away-cancels
+        given: As drag-between
+        when: The user drags the first workspace's button and releases it in the middle of the screen
+        then: "Nothing changes: the order is A, B, C, D and the view stays on A's"
+      - id: escape-cancels
+        given: As drag-between
+        when: The user drags the first workspace's button between the third and the fourth and presses Escape before releasing it
+        then: The buttons move back where they were and nothing changes
+      - id: plus-into-gap
+        given: Two workspaces holding A and B, and the empty last one with its '+'
+        when: The user drags the '+' between A's and B's buttons
+        then: An empty workspace stands between A's and B's and the view goes to it
+      - id: no-rebuild-mid-drag
+        given: The user is dragging a workspace's button
+        when: A window opens or closes meanwhile
+        then: The drag goes on undisturbed, and the indicator shows the change once it ends
   - id: read-back-at-enable
     description: "When the extension is turned on with windows already open — turned off and on again in a running session, or reloaded — it knows nothing of them, and reads the wall back from how they lie, moving nothing: a window as tall as the work area and touching its left or right edge without spanning it is a tile on that side, a maximized or fullscreen window is full, anything else floats where it is. Two windows that would be tiles on the same side of one workspace leave the side to the one on top, and the other floats. What cannot be seen is not guessed: where a full window was moved from (behaviour#going-home) and which tile is waiting to return (behaviour#displacement) are lost, so those windows stay where they are. Before this, every window but a maximized one was taken as floating, and a wall of tiles lost its tiles (issue #1). At login nothing is open yet, and windows are placed as they open (behaviour#role-by-size)."
     scenarios:
@@ -979,7 +1057,7 @@ functions:
   - id: disable
     description: "Undoes enable exactly: disconnects every signal, removes every timer and later still pending (a plan queued in executor is dropped, not finished), destroys the indicator, the preview and the rules overlay, clears the registry, and restores Mutter's edge tiling and Super+Left/Right bindings to what they were before enable. Windows are left where they are."
   - id: dispatch
-    description: "The one way anything gets placed (see the guidelines). Queues an intent and, at the next idle, handles the queue in order, one intent at a time: takes a snapshot (snapshot#take), asks planner#plan for a plan, and waits for executor#run to finish it before planning the next. Intents arriving meanwhile wait their turn; nothing is planned during a frame. After a plan, a recheck of the workspaces it touched is queued, so guests covered by what the plan did are found once its windows have settled (behaviour#covered-guests); a recheck that finds nothing plans nothing, which is what ends the chain. With debug logging on, every plan but an empty recheck is logged in full (logPlan)."
+    description: "The one way anything gets placed (see the guidelines). Queues an intent and, at the next idle, handles the queue in order, one intent at a time: takes a snapshot (snapshot#take), asks planner#plan for a plan, and waits for executor#run to finish it before planning the next. Intents arriving meanwhile wait their turn; nothing is planned during a frame. After a plan that did anything, the indicator is refreshed (indicator#refresh), and a recheck of the workspaces it touched is queued, so guests covered by what the plan did are found once its windows have settled (behaviour#covered-guests); a recheck that finds nothing plans nothing, which is what ends the chain. With debug logging on, every plan but an empty recheck is logged in full (logPlan)."
     arguments:
       - id: intent
         description: what happened, as planner#Intent describes

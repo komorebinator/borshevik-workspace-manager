@@ -41,9 +41,14 @@
     background-color: rgba(255, 255, 255, 0.35);
 }
 
-.bwm-ws-drag-over {
-    background-color: rgba(255, 255, 255, 0.3);
-    border: 1px solid rgba(255, 255, 255, 0.5);
+/* the dragged button: .bwm-ws-bg's shape, a background of its own and an outline */
+.bwm-ws-dragged {
+    height: 22px;
+    min-width: 28px;
+    padding: 0 4px;
+    border: 2px solid rgba(255, 255, 255, 0.15);
+    border-radius: 9999px;
+    background-color: rgba(255, 255, 255, 0.15);
 }
 
 .bwm-ws-row {

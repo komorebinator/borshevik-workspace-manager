@@ -195,6 +195,8 @@ export default class BorshevikWorkspaceManager extends Extension {
                 LOG('dispatch: planning failed', intent.type, e.message, e.stack);
             }
             const after = () => {
+                // a role changed sends nothing the indicator follows
+                if (p?.ops.length) this._indicator?.refresh();
                 // guests covered by what the plan did are found once its windows have settled
                 if (intent.type !== 'recheck') {
                     for (const ws of p?.touched ?? []) {

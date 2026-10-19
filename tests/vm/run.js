@@ -43,6 +43,21 @@ function shellHelper(Main) {
         const r = wm().get_active_workspace().get_work_area_for_monitor(global.display.get_primary_monitor());
         return { x: r.x, y: r.y, width: r.width, height: r.height };
     };
+    // the indicator's workspace buttons as shown: number, icons, '+', and where they are
+    const panel = () => {
+        const box = Main.panel._leftBox.get_children().find(c => c.has_style_class_name?.('bwm-indicator'));
+        if (!box?.visible) return [];
+        const below = a => a.get_children().flatMap(c => [c, ...below(c)]);
+        return box.get_children().filter(c => c.has_style_class_name?.('bwm-ws')).map(b => {
+            const all = below(b), [x, y] = b.get_transformed_position();
+            return {
+                num: Number(all.find(c => c.has_style_class_name?.('bwm-ws-num'))?.text),
+                icons: all.filter(c => c.has_style_class_name?.('bwm-app-icon')).length,
+                plus: all.some(c => c.has_style_class_name?.('bwm-ws-plus')),
+                x: Math.round(x), y: Math.round(y), w: Math.round(b.width), h: Math.round(b.height),
+            };
+        });
+    };
     const settings = () => {
         const s = Main.extensionManager.lookup(UUID)?.stateObj?.getSettings?.();
         if (!s) throw new Error('the extension is not running');
@@ -55,6 +70,7 @@ function shellHelper(Main) {
             return JSON.stringify({
                 active: wm().get_active_workspace_index(), n: wm().n_workspaces,
                 overview: Main.overview.visible, wa: area(), stage: [global.stage.width, global.stage.height],
+                panel: panel(),
                 focus: global.display.focus_window && isTest(global.display.focus_window) ? nameOf(global.display.focus_window) : null,
                 windows: list.map(w => {
                     const r = w.get_frame_rect();
@@ -78,6 +94,10 @@ function shellHelper(Main) {
             case 'minimize': w.minimize(); break;
             case 'restore': Main.activateWindow(w); break;
             case 'close': w.delete(t); break;
+            case 'sendTo':
+                // the window moves and the view stays, as when the extension moves a guest off
+                w.change_workspace(wm().get_workspace_by_index(a));
+                break;
             case 'moveTo': {
                 // as Super+Shift+Page Up/Down does: the window moves and the view goes with it
                 const ws = wm().get_workspace_by_index(a);
@@ -302,6 +322,33 @@ function act(action) {
     case 'moveTo':
         shell(`act(${q(name)}, 'moveTo', ${wsIndex(arg, st)})`);
         break;
+    case 'sendTo':
+        shell(`act(${q(name)}, 'sendTo', ${wsIndex(arg, st)})`);
+        break;
+    case 'dragWs': {
+        // a real drag of a workspace's button in the indicator: name is the workspace's index, or
+        // 'plus' for the '+'; arg is { between: [i, j] }, two workspaces' indexes, or 'away'
+        const button = spec => st.panel.find(b => (spec === 'plus' ? b.plus : !b.plus && b.num === spec + 1));
+        const from = button(name);
+        if (!from) throw new Error(`no indicator button for ${name}`);
+        const fromAt = st.panel.indexOf(from);
+        const spacing = st.panel.length > 1 ? st.panel[1].x - st.panel[0].x - st.panel[0].w : 0;
+        const y = from.y + Math.round(from.h / 2);
+        let x2, y2 = y;
+        if (arg === 'away') {
+            x2 = st.wa.x + Math.round(st.wa.width / 2);
+            y2 = st.wa.y + Math.round(st.wa.height / 2);
+        } else {
+            // the middle of the gap that opens before the second: where it stands with the dragged
+            // button taken out of the row, plus half the dragged one
+            const b = button(arg.between[1]);
+            const left = st.panel.indexOf(b) > fromAt ? b.x - from.w - spacing : b.x;
+            x2 = Math.round(left + from.w / 2);
+        }
+        const r = vm('drag', from.x + Math.round(from.w / 2), y, x2, y2, st.stage[0], st.stage[1]);
+        if (!r.ok) throw new Error(`drag: ${r.err}`);
+        break;
+    }
     case 'activate':
         shell(`activate(${wsIndex(name, st)})`);
         break;

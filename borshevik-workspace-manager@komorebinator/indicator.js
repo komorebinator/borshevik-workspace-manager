@@ -1,7 +1,7 @@
 /* indicator.js — the panel indicator that replaces the Activities button.
  *
  * The wall at a glance: one button per workspace with its windows' icons. It shows and switches;
- * it places nothing.
+ * it places nothing. Reordering by dragging a button is workspace-drag.js's.
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
@@ -12,6 +12,7 @@ import Gio from 'gi://Gio';
 import Shell from 'gi://Shell';
 import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import { WorkspaceDrag } from './workspace-drag.js';
 
 export class Indicator {
     constructor({ registry, isRelevant, path }) {
@@ -20,6 +21,10 @@ export class Indicator {
         this._path = path;
         this._timer = null;
         this._handles = [];
+        this._wsHandles = [];
+        this._buttons = [];
+        this._drag = null;
+        this._stale = false;
     }
 
     enable() {
@@ -30,7 +35,10 @@ export class Indicator {
         const update = () => this._schedule();
         this._handles = [
             [wm, wm.connect('active-workspace-changed', update)],
-            [wm, wm.connect('workspace-added', update)],
+            [wm, wm.connect('workspace-added', (_m, i) => {
+                this._watchWorkspace(wm.get_workspace_by_index(i));
+                update();
+            })],
             [wm, wm.connect('workspace-removed', update)],
             [wm, wm.connect('workspaces-reordered', update)],
             [tracker, tracker.connect('tracked-windows-changed', update)],
@@ -38,13 +46,31 @@ export class Indicator {
             [Main.overview, Main.overview.connect('hiding', () => this._logoBg?.remove_style_class_name('bwm-logo-active'))],
             [Main.sessionMode, Main.sessionMode.connect('updated', () => this._onSessionModeUpdated())],
         ];
+        // a window moving between workspaces changes nothing else the indicator follows
+        for (let i = 0; i < wm.get_n_workspaces(); i++) this._watchWorkspace(wm.get_workspace_by_index(i));
         this._onSessionModeUpdated();
         this._schedule();
     }
 
+    _watchWorkspace(ws) {
+        const update = () => this._schedule();
+        this._wsHandles.push([ws, ws.connect('window-added', update)], [ws, ws.connect('window-removed', update)]);
+    }
+
+    // After a plan has run: a window changing role reorders its workspace's icons, and Mutter
+    // sends nothing the indicator follows for it.
+    refresh() {
+        this._schedule();
+    }
+
     disable() {
+        this._drag?.cancel();
         for (const [obj, id] of this._handles) obj.disconnect(id);
         this._handles = [];
+        for (const [ws, id] of this._wsHandles) {
+            try { ws.disconnect(id); } catch {}   // a workspace GNOME has removed
+        }
+        this._wsHandles = [];
         if (this._timer) GLib.source_remove(this._timer);
         this._timer = null;
         this._box?.destroy();
@@ -55,10 +81,16 @@ export class Indicator {
     // The extension stays enabled on the lock screen, where the panel is still shown: the icons of
     // every open app must not be on show to whoever is at the locked machine.
     _onSessionModeUpdated() {
+        if (Main.sessionMode.isLocked) this._drag?.cancel();
         if (this._box) this._box.visible = !Main.sessionMode.isLocked;
     }
 
+    // During a drag nothing is rebuilt: _update would destroy the very buttons it moves.
     _schedule() {
+        if (this._drag) {
+            this._stale = true;
+            return;
+        }
         if (this._timer) return;
         this._timer = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
             this._timer = null;
@@ -69,6 +101,7 @@ export class Indicator {
 
     _update() {
         this._box.destroy_all_children();
+        this._buttons = [];
         const wm      = global.workspace_manager;
         const nWs     = wm.get_n_workspaces();
         const activeI = wm.get_active_workspace_index();
@@ -141,89 +174,28 @@ export class Indicator {
             });
             btn.set_child(bg);
 
-            // ── Drag-to-reorder ───────────────────────────────────────────────
-            if (!isLast) btn._bwmWs = ws;
-            btn._bwmBg = bg;
-
+            const entry = { actor: btn, bg, ws, plus: isLast };
+            this._buttons.push(entry);
+            // a press may become a drag; until it does, the click is the button's
             btn.connect('button-press-event', (_actor, event) => {
-                if (event.get_button() !== 1) return Clutter.EVENT_PROPAGATE;
-                const [startX, startY] = event.get_coords();
-                let activeDrag = false;
-                let clone = null;
-
-                const captureId = global.stage.connect('captured-event', (_stage, ev) => {
-                    const type = ev.type();
-
-                    if (type === Clutter.EventType.MOTION) {
-                        const [cx, cy] = ev.get_coords();
-                        if (!activeDrag) {
-                            if (Math.hypot(cx - startX, cy - startY) < 6)
-                                return Clutter.EVENT_PROPAGATE;
-                            activeDrag = true;
-                            const [bx, by] = bg.get_transformed_position();
-                            clone = new Clutter.Clone({ source: bg });
-                            clone.set_position(bx, by);
-                            Main.layoutManager.uiGroup.add_child(clone);
-                            bg.opacity = 80;
-                        }
-                        clone.set_x(cx - clone.width / 2);
-                        this._updateDragTarget(cx, ws);
-                        return Clutter.EVENT_PROPAGATE;
-                    }
-
-                    if (type === Clutter.EventType.BUTTON_RELEASE) {
-                        global.stage.disconnect(captureId);
-                        if (!activeDrag) return Clutter.EVENT_PROPAGATE;
-                        clone.destroy();
-                        bg.opacity = 255;
-                        this._commitDrop(ws, isLast);
-                        return Clutter.EVENT_STOP;
-                    }
-
-                    if (type === Clutter.EventType.KEY_PRESS &&
-                        ev.get_key_symbol() === Clutter.KEY_Escape) {
-                        global.stage.disconnect(captureId);
-                        if (activeDrag) {
-                            clone.destroy();
-                            bg.opacity = 255;
-                            this._wsDragTarget?._bwmBg.remove_style_class_name('bwm-ws-drag-over');
-                            this._wsDragTarget = null;
-                        }
-                        return Clutter.EVENT_STOP;
-                    }
-
-                    return Clutter.EVENT_PROPAGATE;
+                if (event.get_button() !== 1 || this._drag) return Clutter.EVENT_PROPAGATE;
+                this._drag = new WorkspaceDrag({
+                    buttons: this._buttons, source: entry, box: this._box, start: event.get_coords(),
+                    onEnd: dragged => this._dragEnded(dragged),
                 });
-
                 return Clutter.EVENT_PROPAGATE;
             });
-            // ─────────────────────────────────────────────────────────────────
 
             this._box.add_child(btn);
         }
     }
 
-    _updateDragTarget(cx, srcWs) {
-        let found = null;
-        for (const child of this._box.get_children()) {
-            if (!child._bwmWs || child._bwmWs === srcWs) continue;
-            const [ax] = child.get_transformed_position();
-            if (cx >= ax && cx < ax + child.width) { found = child; break; }
+    // Rebuilt after any real drag, whatever it changed: what it moved goes back with the buttons.
+    _dragEnded(dragged) {
+        this._drag = null;
+        if (this._stale || dragged) {
+            this._stale = false;
+            this._schedule();
         }
-        if (this._wsDragTarget !== found) {
-            this._wsDragTarget?._bwmBg.remove_style_class_name('bwm-ws-drag-over');
-            this._wsDragTarget = found;
-            found?._bwmBg.add_style_class_name('bwm-ws-drag-over');
-        }
-    }
-
-    _commitDrop(srcWs, activate = false) {
-        const target = this._wsDragTarget;
-        this._wsDragTarget?._bwmBg.remove_style_class_name('bwm-ws-drag-over');
-        this._wsDragTarget = null;
-        if (!target) return;
-        global.workspace_manager.reorder_workspace(srcWs, target._bwmWs.index());
-        if (activate)
-            srcWs.activate(global.get_current_time());
     }
 }
