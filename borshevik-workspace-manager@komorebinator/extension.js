@@ -96,10 +96,8 @@ export default class BorshevikWorkspaceManager extends Extension {
         this._rules = new WindowRules({ settings: this._settings, registry: this._registry });
         this._executor = new Executor({
             registry: this._registry, settings: this._settings,
-            onSettled: (win, width) => dispatch({ type: 'settled', win, width }),
-            isGrabbed: win => this._drag?.isGrabbed(win),
         });
-        this._drag = new DragController({ registry: this._registry, rules: this._rules, dispatch });
+        this._drag = new DragController({ registry: this._registry, rules: this._rules, dispatch, executor: this._executor });
         this._windows = new WindowTracker({
             registry: this._registry, rules: this._rules, executor: this._executor, dispatch,
             settings: this._settings, isDragging: win => this._drag.isDragging(win),

@@ -158,7 +158,7 @@ export class AndroidWindows {
         const st = this._state.get(win);
         st.fullScreen = true;
         // adopted at enable, it is taken where it is; new, it is placed like any new window
-        this._windows.register(win, { batch: !st.adopt });
+        this._windows.register(win, { open: !st.adopt });
     }
 
     _scheduleRelease(win) {

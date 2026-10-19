@@ -7,14 +7,10 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { LOG, name } from './log.js';
 
-const BATCH_MS = 150;
-const RESTACK_MS = 80;
-const FIRST_FRAME_WAIT_MS = 500;
 const TILE_SIGHT_PX = 10;
 
 const sideOf = rec => (rec?.role === 'tiled-left' ? 'left' : rec?.role === 'tiled-right' ? 'right' : null);
@@ -28,9 +24,7 @@ export class WindowTracker {
         this._settings = settings;
         this._isDragging = isDragging;
         this.android = null;   // set by the extension once android exists
-        this._pendingBatch = new Set();
-        this._batchTimer = null;
-        this._restackTimer = null;
+        this._restackLater = 0;
         this._connected = new Map();
         this._seen = new Map();          // the full/minimized state last acted on, per window
         this._handles = [];
@@ -61,10 +55,8 @@ export class WindowTracker {
             }
         }
         this._connected.clear();
-        if (this._batchTimer) GLib.source_remove(this._batchTimer);
-        if (this._restackTimer) GLib.source_remove(this._restackTimer);
-        this._batchTimer = this._restackTimer = null;
-        this._pendingBatch.clear();
+        if (this._restackLater) global.compositor.get_laters().remove(this._restackLater);
+        this._restackLater = 0;
         this._seen.clear();
     }
 
@@ -120,30 +112,21 @@ export class WindowTracker {
                 actor.disconnect(id);
                 decide('first frame');
             });
-            // A window opening on a workspace that is not shown draws no frame until it is: Chrome
-            // restoring a session, the view gone with its first window. It is not left unmanaged —
-            // but it is judged by its size, so not before it has one: a window slow to start may
-            // still be 0x0 by then, and was left floating however it then opened.
-            GLib.timeout_add(GLib.PRIORITY_DEFAULT, FIRST_FRAME_WAIT_MS, () => {
-                if (decided || !win.get_compositor_private() || !this.isRelevant(win)) return GLib.SOURCE_REMOVE;
-                const sized = () => {
-                    const r = win.get_frame_rect();
-                    return r.width > 0 && r.height > 0;
-                };
-                if (sized()) {
-                    decide('timeout');
-                    return GLib.SOURCE_REMOVE;
-                }
-                const id = win.connect('size-changed', () => {
-                    if (decided) {
-                        win.disconnect(id);
-                    } else if (sized()) {
-                        win.disconnect(id);
-                        this._defer(() => decide('size, after the timeout'));
-                    }
-                });
-                return GLib.SOURCE_REMOVE;
+            // A window opening on a workspace that is not shown draws no frame until it is — Chrome
+            // restoring a session, the view gone with its first window — but it is given a size, and
+            // is judged by it then. One shown is judged at whichever comes first.
+            const sized = () => {
+                const r = win.get_frame_rect();
+                return r.width > 0 && r.height > 0;
+            };
+            const sizeId = win.connect('size-changed', () => {
+                if (!decided && !sized()) return;
+                win.disconnect(sizeId);
+                if (!decided) this._defer(() => decide('first size'));
             });
+            // an X11 window has its class and geometry from its creation, and may never change size
+            if (win.get_client_type() === Meta.WindowClientType.X11 && sized())
+                this._defer(() => decide('creation'));
         };
         if (win.get_compositor_private()) {
             attach();
@@ -170,8 +153,9 @@ export class WindowTracker {
         this._defer(() => this._rules.apply(win));
     }
 
-    // tile: the side adoptExisting saw it tiled on, if any
-    register(win, { batch = true, tile = null } = {}) {
+    // open: placed by an opened intent of its own, as a new window is; tile: the side
+    // adoptExisting saw it tiled on, if any
+    register(win, { open = true, tile = null } = {}) {
         const full = win.fullscreen || (win.maximized_horizontally && win.maximized_vertically);
         const r0 = win.get_frame_rect();
         LOG('windows: register', name(win), `ws=${win.get_workspace()?.index()} full=${full}`,
@@ -184,21 +168,15 @@ export class WindowTracker {
             lastWs: win.get_workspace(),
             lastMonitor: win.get_monitor(),
             ownWsRule: this._rules.ownWorkspaceRule(win),
-            // one waiting for its batch is placed by its own opened intent, and no other plan
-            // may count it before that
-            placed: !batch,
+            // one waiting for its opened intent is placed by it, and no other plan may count it
+            // before that
+            placed: !open,
         });
         this._seen.set(win, { full, fullscreen: win.fullscreen, minimized: win.minimized });
         this._connect(win);
         this._defer(() => this._rules.apply(win));
-        if (batch) {
-            this._pendingBatch.add(win);
-            this._batchTimer ??= GLib.timeout_add(GLib.PRIORITY_DEFAULT, BATCH_MS, () => {
-                this._batchTimer = null;
-                this._flushBatch();
-                return GLib.SOURCE_REMOVE;
-            });
-        }
+        // each on its own, as it is ready: the planner places it on the wall the ones before it left
+        if (open) this._dispatch({ type: 'opened', wins: [win] });
         return rec;
     }
 
@@ -225,19 +203,11 @@ export class WindowTracker {
         ]);
     }
 
-    _flushBatch() {
-        const wins = [...this._pendingBatch].filter(w => this._registry.get(w) && w.get_compositor_private());
-        this._pendingBatch.clear();
-        LOG('windows: batch of', wins.length);
-        if (wins.length) this._dispatch({ type: 'opened', wins });
-    }
-
     // ── what happens to them ─────────────────────────────────────────────────
 
     _onUnmanaged(win) {
         this._connected.delete(win);
         this._seen.delete(win);
-        this._pendingBatch.delete(win);
         const rec = this._registry.get(win);
         this._registry.drop(win);
         if (!rec) return;
@@ -327,14 +297,15 @@ export class WindowTracker {
         if (!ws.list_windows().some(w => !w.is_on_all_workspaces() && this.isRelevant(w))) Main.overview.show();
     }
 
+    // Mutter restacks in bursts: one recheck for all of one, at the next idle
     _onRestacked() {
-        if (this._restackTimer) return;
-        this._restackTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, RESTACK_MS, () => {
-            this._restackTimer = null;
+        if (this._restackLater) return;
+        this._restackLater = global.compositor.get_laters().add(Meta.LaterType.IDLE, () => {
+            this._restackLater = 0;
             const ws = global.workspace_manager.get_active_workspace();
             if (this._registry.windows().some(w => w.get_workspace() === ws))
                 this._dispatch({ type: 'recheck', ws });
-            return GLib.SOURCE_REMOVE;
+            return false;
         });
     }
 
@@ -364,7 +335,7 @@ export class WindowTracker {
                     this.android.adoptExisting(win);
                     continue;
                 }
-                this.register(win, { batch: false, tile: tiles.get(win) ?? null });
+                this.register(win, { open: false, tile: tiles.get(win) ?? null });
                 LOG('windows: adopted', name(win), '→', this._registry.get(win).role);
             }
         }

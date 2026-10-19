@@ -127,7 +127,21 @@ function keepFloatRect(wall, w) {
     emit(wall, { op: 'floatRect', win: w.win, rect: { ...w.rect } });
 }
 
+// Never narrower than the app says its window can be (Snapshot's minWidth): asked for less, an
+// app keeps its smallest width and the two tiles overlap. A partner that would then overlap gives
+// up just as much, down to its own smallest; past that the window itself gives way.
 function setTile(wall, w, side, width) {
+    const partner = tiles(wall.workspaces[indexOf(wall, w)], w)[other(side)];
+    let want = Math.max(width, w.minWidth ?? 0);
+    if (partner && want + partner.rect.width > wall.wa.width) {
+        const rest = Math.max(wall.wa.width - want, partner.minWidth ?? 0);
+        if (rest !== partner.rect.width) placeTile(wall, partner, other(side), rest);
+        if (want + partner.rect.width > wall.wa.width) want = Math.max(wall.wa.width - partner.rect.width, w.minWidth ?? 0);
+    }
+    placeTile(wall, w, side, want);
+}
+
+function placeTile(wall, w, side, width) {
     keepFloatRect(wall, w);
     w.role = `tiled-${side}`;
     w.rect = tileRect(wall.wa, side, width);
@@ -675,7 +689,6 @@ export function plan(snapshot, intent) {
     case 'minimized': _minimized(wall, w); break;
     case 'restored': _restored(wall, w); break;
     case 'resized': _fit(wall, w, intent.width); break;
-    case 'settled': _fit(wall, w, intent.width); break;
     case 'recheck': {
         const i = indexOfWs(wall, intent.ws);
         if (i >= 0) {

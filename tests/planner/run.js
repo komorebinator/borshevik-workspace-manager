@@ -141,10 +141,9 @@ class World {
                 w.fullscreen = false;
                 w.rect = { ...op.rect };
                 if (w.minWidth && w.rect.width < w.minWidth) {
-                    // a window with a smallest width settles wider than asked; executor reports it
+                    // asked for less, an app keeps its smallest width, and the tiles overlap
                     if (op.side === 'right') w.rect.x -= w.minWidth - w.rect.width;
                     w.rect.width = w.minWidth;
-                    (this.settled ??= []).push({ win: w, width: w.minWidth });
                 }
                 break;
             case 'full':
@@ -176,9 +175,6 @@ class World {
         }
         if (p.activate) this.active = this.resolveWs(p.activate, refs);
         if (p.focus) this.focus = p.focus;
-        const settled = this.settled ?? [];
-        this.settled = [];
-        for (const s of settled) this.dispatch({ type: 'settled', win: s.win, width: s.width });
     }
 
     // ── what the user and Mutter do ────────────────────────────────────────────
@@ -228,7 +224,9 @@ class World {
             break;
         }
         case 'openMany':
-            this.dispatch({ type: 'opened', wins: name.map(([n, o]) => this.open(n, o)) });
+            // each placed on its own in the order it is ready (windows#register); the ones still
+            // waiting count in no plan (`placed`), as if not open yet
+            for (const [n, o] of name) this.dispatch({ type: 'opened', wins: [this.open(n, o)] });
             break;
         case 'tile': {
             const w = this.find(name);

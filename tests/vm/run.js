@@ -199,7 +199,6 @@ function openArgs(name, opts = {}, wa) {
     const [w, h] = opts.size ?? [0.3, 0.3];
     const args = ['open', name, Math.round(w * wa.width), Math.round(h * wa.height)];
     if (opts.minWidth) args.push('--min-width', Math.round(opts.minWidth * wa.width));
-    if (opts.minWidthAfter) args.push('--min-width-after', Math.round(opts.minWidthAfter * 1000));
     if (opts.maximized) args.push('--maximized');
     if (opts.fullscreen) args.push('--fullscreen');
     if (opts.app) args.push('--app', opts.app);

@@ -2,11 +2,9 @@
 // the app id org.borshevik.Test.<app>, so a test window is told apart by wm_class and window
 // rules can match it. Runs as tester in the test machine under gjs.
 //
-//   gjs -m test-window.js <name> [width height] [--min-width px [--min-width-after ms]]
+//   gjs -m test-window.js <name> [width height] [--min-width px]
 //                         [--maximized] [--fullscreen] [--app id] [--stall ms]
 //
-// --min-width-after: a slow app — the smallest width holds only that long after the window was
-// made narrower than it, and until then the window takes any width it is given.
 // --stall: an app slow to start — once shown, the window answers nothing for that long, so GNOME
 // has it neither sized nor drawn (behaviour#role-by-size#slow-to-open).
 import GLib from 'gi://GLib';
@@ -21,7 +19,6 @@ const option = f => { const i = args.indexOf(f); if (i < 0) return null; const [
 const maximized = flag('--maximized');
 const fullscreen = flag('--fullscreen');
 const minWidth = Number(option('--min-width') ?? 0);
-const minWidthAfter = Number(option('--min-width-after') ?? 0);
 const appName = option('--app');
 const stall = Number(option('--stall') ?? 0);
 const [name, width = '400', height = '300'] = args;
@@ -37,20 +34,7 @@ app.connect('activate', () => {
     });
     const label = new Gtk.Label({ label: name, css_classes: ['title-1'] });
     // a window cannot be made narrower than its content: this is how a smallest width is had
-    if (minWidth > 0 && !minWidthAfter) label.set_size_request(minWidth, -1);
-    if (minWidth > 0 && minWidthAfter) {
-        let pending = false;
-        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
-            if (!pending && win.get_width() > 0 && win.get_width() < minWidth) {
-                pending = true;
-                GLib.timeout_add(GLib.PRIORITY_DEFAULT, minWidthAfter, () => {
-                    label.set_size_request(minWidth, -1);
-                    return GLib.SOURCE_REMOVE;
-                });
-            }
-            return GLib.SOURCE_CONTINUE;
-        });
-    }
+    if (minWidth > 0) label.set_size_request(minWidth, -1);
     win.set_child(label);
     if (maximized) win.maximize();
     if (fullscreen) win.fullscreen();

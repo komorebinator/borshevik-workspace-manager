@@ -20,7 +20,7 @@ export class Registry {
         this._ignored.delete(win);
         const record = {
             role: 'floating', preFull: null, home: null, floatRect: null, minimizedFrom: null,
-            lastWs: null, lastMonitor: -1, tileRect: null, placed: true, rules: new Set(), ownWsRule: null, minWidth: 0,
+            lastWs: null, lastMonitor: -1, tileRect: null, placed: true, rules: new Set(), ownWsRule: null, pendingRect: null,
             ...fields,
         };
         this._records.set(win, record);

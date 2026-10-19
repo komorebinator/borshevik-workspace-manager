@@ -4,7 +4,7 @@
 //
 // given.workspaces — the primary monitor's workspaces in order, each { left, right, full, floating }.
 //   A window is a name, or { name, width } for a tile (a share of the work area), or
-//   { name, size: [w, h], place: [x, y], minWidth, minWidthAfter } for a floating one (shares of the work
+//   { name, size: [w, h], place: [x, y], minWidth } for a floating one (shares of the work
 //   area), or { name, fullscreen: true } for a full one. Tiles are made with Super+Left/Right
 //   from a small floating window, full ones are opened maximized, floating ones opened last.
 // given.active — the workspace shown before `steps` (default 0).
@@ -22,7 +22,13 @@
 // ['maximize' | 'unmaximize' | 'fullscreen' | 'unfullscreen' | 'minimize' | 'restore' | 'close'
 // | 'click', name], ['moveTo', name, index], ['activate', index], ['place', name, [x, y]],
 // ['drag', name, 'left' | 'right' | 'top' | [x, y]], ['dragAway', name], ['clickTitle', name],
-// ['pointer', null, [x, y]] — the pointer moved there without a button.
+// ['pointer', null, [x, y]] — the pointer moved there without a button,
+// ['resizeEdge', name, share] — the inner edge of a tile dragged so it is that share wide,
+// ['width', name, share], ['sendTo', name, index] — moved there, the view staying,
+// ['reorder', index, to] — a workspace moved, as in the indicator, ['reenable'] — the extension
+// turned off and on, ['dragWs', index | 'plus', { between: [i, j] } | 'away'] — a workspace's
+// button dragged in the indicator; Chrome's and Android's own: 'openMany', 'chromeQuit',
+// 'chromeRestore', 'dragTab', 'android', 'androidFull', 'androidFloat', 'androidTheme'.
 // A step may end with { quick: true }: the next one follows as soon as nothing changes for a poll,
 // as a person acting at once would, rather than after the shell has been still a while.
 //
@@ -150,21 +156,6 @@ export const scenarios = [
     {
         id: 'two-slots#narrow-remainder',
         given: { workspaces: [{ left: { name: 'A', width: 0.85 }, floating: [{ name: 'W', minWidth: 0.3 }] }] },
-        when: ['tile', 'W', 'right'],
-        then: {
-            workspaces: [{ left: 'A', right: 'W' }], active: 0,
-            check: h => {
-                const a = h.rect('A'), w = h.rect('W');
-                if (w.width < h.wa.width * 0.3 - 12) return 'W is narrower than it can be';
-                if (a.x + a.width > w.x + 12) return 'A and W overlap';
-                return Math.abs(a.width + w.width - h.wa.width) <= 12 ? null : 'A and W do not fill the work area';
-            },
-        },
-    },
-    {
-        // a slow app: it reaches its smallest width a second after it is made narrower
-        id: 'two-slots#narrow-remainder-slow',
-        given: { workspaces: [{ left: { name: 'A', width: 0.85 }, floating: [{ name: 'W', minWidth: 0.3, minWidthAfter: 1 }] }] },
         when: ['tile', 'W', 'right'],
         then: {
             workspaces: [{ left: 'A', right: 'W' }], active: 0,

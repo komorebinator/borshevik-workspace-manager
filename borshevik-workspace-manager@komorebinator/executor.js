@@ -7,33 +7,16 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import GLib from 'gi://GLib';
 import { LOG, name } from './log.js';
 
-// How long a window is watched after it is given a geometry: for Chrome putting its old position
-// back after an unmaximize, and for a window that settles wider than asked
-const WATCH_MS = 2000;
-// A width is taken as the one the window settled at only once it has held this long: a slow app
-// reports the size it had before the one just asked of it
-const SETTLE_QUIET_MS = 150;
-// How often one window may be found to have settled wider: two apps each catching up late took
-// each other's late sizes for settled ones, without end (the author's session, 2026-10-19)
-const SETTLE_LIMIT = 2;
-const SETTLE_WINDOW_MS = 5000;
-
 export class Executor {
-    constructor({ registry, settings, onSettled, isGrabbed }) {
+    constructor({ registry, settings }) {
         this._registry = registry;
         this._settings = settings;
-        this._onSettled = onSettled;
-        this._isGrabbed = isGrabbed;
-        this._watches = new Map();   // per tile, the watch of its width after it was given one
-        this._settles = new Map();   // per tile, when it was last found to have settled wider
         this._running = false;
         this._moving = new Set();
         this._wasFull = new WeakSet();   // windows just brought out of maximize or fullscreen
-        this._timers = new Set();
-        this._handlers = [];
+        this._pending = new Map();       // per window, the handler waiting for its next size
     }
 
     get running() { return this._running; }
@@ -44,57 +27,37 @@ export class Executor {
     }
 
     destroy() {
-        for (const win of [...this._watches.keys()]) this.stopWatching(win);
-        for (const id of this._timers) GLib.source_remove(id);
-        this._timers.clear();
-        for (const [obj, id] of this._handlers) {
-            try { obj.disconnect(id); } catch {}
+        for (const win of [...this._pending.keys()]) this.forgetPending(win);
+    }
+
+    // What a window waits for at its next size-changed is dropped: a new geometry for it replaces
+    // it, and the hand taking the window (drag) ends it.
+    forgetPending(win) {
+        const id = this._pending.get(win);
+        if (id) {
+            this._pending.delete(win);
+            try { win.disconnect(id); } catch {}   // a window gone
         }
-        this._handlers = [];
+        const rec = this._registry.get(win);
+        if (rec) rec.pendingRect = null;
     }
 
-    _cancel(id) {
-        if (!id || !this._timers.delete(id)) return;
-        GLib.source_remove(id);
-    }
-
-    _timeout(ms, fn) {
-        const id = GLib.timeout_add(GLib.PRIORITY_DEFAULT, ms, () => {
-            this._timers.delete(id);
+    _onNextSize(win, fn) {
+        this.forgetPending(win);
+        this._pending.set(win, win.connect('size-changed', () => {
+            this.forgetPending(win);
             fn();
-            return GLib.SOURCE_REMOVE;
-        });
-        this._timers.add(id);
-        return id;
+        }));
     }
 
     run(plan, done) {
         this._running = true;
         const refs = new Map();
         const wm = global.workspace_manager;
-        let waiting = 0;
-        let finished = false;
-        const finish = () => {
-            if (finished || waiting > 0) return;
-            finished = true;
-            this._running = false;
-            done?.();
-        };
-        const wait = () => {
-            waiting++;
-            let released = false;
-            return () => {
-                if (released) return;
-                released = true;
-                waiting--;
-                finish();
-            };
-        };
-
         LOG('executor: run', plan.ops.length, 'op(s)', plan.activate ? 'and show a workspace' : '');
         for (const op of plan.ops) {
             try {
-                this._apply(op, refs, wait);
+                this._apply(op, refs);
             } catch (e) {
                 LOG('executor: op failed', op.op, e.message, e.stack);
             }
@@ -118,7 +81,8 @@ export class Executor {
         } catch (e) {
             LOG('executor: activate failed', e.message);
         }
-        finish();
+        this._running = false;
+        done?.();
     }
 
     _resolve(ws, refs) {
@@ -126,7 +90,7 @@ export class Executor {
         return ws.newWorkspace ? refs.get(ws.newWorkspace) ?? null : ws;
     }
 
-    _apply(op, refs, wait) {
+    _apply(op, refs) {
         const win = op.win;
         const rec = win ? this._registry.get(win) : null;
         switch (op.op) {
@@ -143,7 +107,7 @@ export class Executor {
                 rec.tileRect = { ...op.rect };
             }
             this._unfull(win);
-            this._applyGeometry(win, op.rect, rec, wait, true);
+            this._applyGeometry(win, op.rect, rec);
             break;
         case 'full':
             if (rec) {
@@ -155,7 +119,7 @@ export class Executor {
             break;
         case 'float':
             if (rec) rec.role = 'floating';
-            this._float(win, op, rec, wait);
+            this._float(win, op, rec);
             break;
         case 'place': win.move_frame(true, op.x, op.y); break;
         case 'home': if (rec) rec.home = op.home && { ...op.home, ws: this._resolve(op.home.ws, refs) }; break;
@@ -202,8 +166,10 @@ export class Executor {
 
     // Move, then resize: some apps ignore the move half of a combined call. After an unmaximize
     // Chrome restores its old position once the new geometry is in, so the rect goes in once more
-    // on the next size-changed. Once settled, a window wider than asked reports its width.
-    _applyGeometry(win, rect, rec, wait, isTile) {
+    // at the window's next size-changed, and until then the window is taken to be where it was
+    // put (the record's pendingRect): nothing waits for it, and nothing is planned from where it
+    // is on its way.
+    _applyGeometry(win, rect, rec) {
         const role = rec?.role;
         const apply = () => {
             if (rec && rec.role !== role) return;
@@ -212,103 +178,29 @@ export class Executor {
         };
         const wasFull = this._wasFull.has(win);
         this._wasFull.delete(win);
+        this.forgetPending(win);
         apply();
-        if (wasFull) {
-            const release = wait();
-            let id = win.connect('size-changed', () => {
-                win.disconnect(id);
-                id = null;
-                apply();
-                release();
-            });
-            this._timeout(WATCH_MS, () => {
-                if (id !== null) { win.disconnect(id); id = null; }
-                release();
-            });
-        }
-        if (isTile) this._watchWidth(win, rect, rec, role);
+        if (!wasFull) return;
+        this._onNextSize(win, apply);
+        if (rec) rec.pendingRect = { ...rect };
     }
 
-    // A window with a smallest width ends up wider than asked — at once, or once a slow app has
-    // caught up: whenever its size changes while it is watched, not after a guess. One watch per
-    // window, the last one asked for. Nothing the hand does counts, and a width counts only once it
-    // has held: a late report of the size before is followed at once by the one asked, while a
-    // window that will not be narrower stays as it is.
-    _watchWidth(win, rect, rec, role) {
-        this.stopWatching(win);
-        const w = { id: 0, timer: 0, quiet: 0 };
-        this._watches.set(win, w);
-        const stop = () => this.stopWatching(win);
-        w.id = win.connect('size-changed', () => {
-            if ((rec && rec.role !== role) || this._isGrabbed?.(win)) {
-                stop();
-                return;
-            }
-            this._cancel(w.quiet);
-            w.quiet = this._timeout(SETTLE_QUIET_MS, () => {
-                w.quiet = 0;
-                const now = win.get_frame_rect().width;
-                if (now <= rect.width + 4) {
-                    if (!w.timer) stop();
-                    return;
-                }
-                stop();
-                if (this._tooOften(win)) {
-                    LOG('executor: settled wider again too soon, left as it is', name(win), now, '>', rect.width);
-                    return;
-                }
-                LOG('executor: settled wider', name(win), now, '>', rect.width);
-                this._onSettled(win, now);
-            });
-        });
-        w.timer = this._timeout(WATCH_MS, () => {
-            w.timer = 0;
-            if (!w.quiet) stop();
-        });
-    }
-
-    stopWatching(win) {
-        const w = this._watches.get(win);
-        if (!w) return;
-        this._watches.delete(win);
-        try { win.disconnect(w.id); } catch {}
-        this._cancel(w.timer);
-        this._cancel(w.quiet);
-    }
-
-    _tooOften(win) {
-        const now = GLib.get_monotonic_time() / 1000;
-        const times = (this._settles.get(win) ?? []).filter(t => now - t < SETTLE_WINDOW_MS);
-        const too = times.length >= SETTLE_LIMIT;
-        if (!too) times.push(now);
-        this._settles.set(win, times);
-        return too;
-    }
-
-    _float(win, op, rec, wait) {
+    _float(win, op, rec) {
         this._unfull(win);
         if (op.rect) {
             const rect = op.keepPosition ? { ...op.rect, ...this._position(win) } : op.rect;
-            this._applyGeometry(win, rect, rec, wait, false);
+            this._applyGeometry(win, rect, rec);
             return;
         }
         this._wasFull.delete(win);
         // no geometry known — a window that opened maximized: centred at the size it settles at
-        const release = wait();
-        let id = win.connect('size-changed', () => {
-            win.disconnect(id);
-            id = null;
+        this._onNextSize(win, () => {
             const wa = win.get_work_area_current_monitor();
             const r = win.get_frame_rect();
             const x = wa.x + Math.round((wa.width - r.width) / 2);
             const y = wa.y + Math.round((wa.height - r.height) / 2);
             win.move_frame(true, x, y);
             if (rec) rec.floatRect = { x, y, width: r.width, height: r.height };
-            release();
-        });
-        this._timeout(WATCH_MS, () => {
-            if (id !== null) { win.disconnect(id); id = null; }
-            release();
         });
     }
 

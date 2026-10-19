@@ -7,6 +7,15 @@
 
 const toRect = r => ({ x: r.x, y: r.y, width: r.width, height: r.height });
 
+// The narrowest the app says its window can be, as a frame width: Mutter keeps the minimum the
+// app declared (xdg_toplevel.set_min_size, WM_NORMAL_HINTS) in client coordinates, shadows and all.
+function minWidthOf(w) {
+    const [ok, width] = w.get_min_size();
+    if (!ok || width <= 0) return 0;
+    const frame = w.get_frame_rect();
+    return Math.max(0, width - (w.frame_rect_to_client_rect(frame).width - frame.width));
+}
+
 export function take(registry, floatSizes, opening = []) {
     const wm = global.workspace_manager;
     const monitor = global.display.get_primary_monitor();
@@ -20,7 +29,8 @@ export function take(registry, floatSizes, opening = []) {
         const ws = wm.get_workspace_by_index(i);
         const windows = managed.filter(w => w.get_workspace() === ws).map(w => {
             const rec = registry.get(w);
-            const live = toRect(w.get_frame_rect());
+            // one brought out of maximize is where it was put until its next size (executor)
+            const live = rec.pendingRect ? { ...rec.pendingRect } : toRect(w.get_frame_rect());
             // a tile is where it was put: an app takes a moment to accept a new size, and the
             // live rect read meanwhile would have the planner undo the tile it just made
             const tiled = rec.role === 'tiled-left' || rec.role === 'tiled-right';
@@ -34,7 +44,7 @@ export function take(registry, floatSizes, opening = []) {
                 // which may have opened at the size it was last tiled at (windows#register)
                 floatRect: rec.role === 'floating' && !w.minimized && !opening.includes(w) ? live : rec.floatRect,
                 appFloatSize: floatSizes[w.get_wm_class()] ?? null,
-                minWidth: rec.minWidth, ownWsRule: rec.ownWsRule,
+                minWidth: minWidthOf(w), ownWsRule: rec.ownWsRule,
                 transientFor: !!(parent && registry.get(parent)),
             };
         });
