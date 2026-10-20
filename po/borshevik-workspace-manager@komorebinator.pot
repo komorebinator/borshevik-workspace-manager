@@ -82,7 +82,7 @@ msgid "+ New rule for this window"
 msgstr ""
 
 #: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:101
-msgid "+ New rule"
+msgid "New rule"
 msgstr ""
 
 #: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:301
@@ -187,3 +187,6 @@ msgstr ""
 msgid "Performance report copied"
 msgstr ""
 
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:276
+msgid "Edit rule"
+msgstr ""

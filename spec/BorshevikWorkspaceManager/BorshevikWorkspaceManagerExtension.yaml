@@ -373,6 +373,10 @@ components:
     src: borshevik-workspace-manager@komorebinator/rules.js
     description: "The window rules (behaviour#window-rules): matching windows against them and applying their actions. The rules themselves are the window-rules setting, in the shape rules-ui writes (rules-ui#rule (JSON shape, not a class)), and are edited there."
     functions:
+      - id: narrows
+        description: "Whether a rule picks some windows rather than all: one of its conditions is on and narrows — a class or title pattern that is not empty, or any of the flags. An empty pattern matches every class and title, so a rule whose only condition is one applied to every window there was: + New rule starts with the class condition on and its pattern empty, and Save took it, since a condition was on (the old _hasEnabledCondition). _matches asks it first, for a rule saved before rules-ui refused one (behaviour#window-rules#empty-pattern-picks-nothing)."
+      - id: savable
+        description: "Whether rules-ui may save a rule: it narrows, and every pattern it has on is a valid one — an invalid pattern matches no window at all (_matches), so the rule would do nothing while looking saved. rules-ui keeps Save unusable, greyed, while a draft is not savable, rather than ignoring the click without a word."
       - id: apply
         description: Applies every saved rule, in order, to one window — a later rule can override an earlier one's effect — and records on the window's record which ones matched. Deferred to the next idle after registration, like any change to a window.
       - id: applyToAll
@@ -384,7 +388,7 @@ components:
       - id: ownWorkspaceRule
         description: The id of the rule whose open-on-own-workspace action a window matches, if any, for the snapshot (planner#Snapshot's ownWsRule); asked only while the window has not been placed yet.
       - id: _matches
-        description: "Whether a window meets a rule: every enabled condition must hold — the class and title regexes (an invalid regex matches nothing), and for the boolean conditions only that the window currently has that property; their stored `value` is not consulted. The maximized condition reads Mutter's own flags, since rules are written against them."
+        description: "Whether a window meets a rule: never for one that does not narrow (narrows); otherwise every enabled condition must hold — the class and title regexes (an invalid regex matches nothing), and for the boolean conditions only that the window currently has that property; their stored `value` is not consulted. The maximized condition reads Mutter's own flags, since rules are written against them."
       - id: _applyOne
         description: "Applies a matching rule's enabled actions that change the window directly: stick to or unstick from all workspaces, keep on top or not, a geometry given as percentages of the work area. Opening on a workspace of its own is a placement, which the planner decides (ownWorkspaceRule); the ignore and close actions decide whether a window is managed, or kept, at all, which only isIgnored and isClosed ask."
       - id: appliedTo
@@ -483,12 +487,19 @@ components:
   - id: rules-ui
     type: "@View"
     src: borshevik-workspace-manager@komorebinator/window-rules-ui.js
-    description: |
-      An overlay inside GNOME Shell (not a separate window) for seeing and editing window rules, toggled by Super+R. The Windows tab lists the active workspace's windows with the rules that apply to each and a button to start a rule from that window; it follows window and workspace changes live, but not while a rule is being edited, which would throw the edit away. The Rules tab lists all rules and starts a blank one. A rule is edited in place as a draft: Save refuses a rule with no enabled condition, since it would match every window, stores it, and applies it at once to all open windows (rules#applyToAll); Cancel drops the draft; Delete removes a saved rule. A rule started from a window is prefilled with its class, and its geometry with where the window is now, so switching geometry on keeps it in place.
+    description: "An overlay inside GNOME Shell (not a separate window) for seeing and editing window rules, toggled by Super+R. Its header holds the title, Window Rules whatever is shown — rules have no names to show instead — then the form's own tab, the two tabs and the close button. The form's tab reads New rule, and starts a blank one; while a form is shown it is highlighted, as the tab a list is on is, and reads Edit rule for a saved rule. The Windows tab lists the active workspace's windows with the rules that apply to each and a button to start a rule from that window; it follows window and workspace changes live. The Rules tab lists all rules. Pressing a rule in either list opens its form in place of the list, a page of its own (_showEditor), headed by the rule's summary, which follows every change made in it: rules were once edited in the list itself, opening under their line, and the overlay grew and shrank with every one opened (the author, 2026-10-20). The form edits a draft: Save, usable only while the draft is one rules#savable accepts — it picks some windows, and its patterns are valid — stores it, and applies it at once to all open windows (rules#applyToAll); Cancel drops the draft; Delete, apart on the other side and only for a saved rule, removes it; each goes back to the list the form came from, and so does either tab, as Cancel. Nothing rebuilds a list under a form: the Windows tab's live updates are dropped while one is shown. A rule started from a window is prefilled with its class, and its geometry with where the window is now, so switching geometry on keeps it in place. The overlay keeps one height whichever page it shows (_fitHeight)."
     fields:
       - id: "rule (JSON shape, not a class)"
         type: "{id: uuid, conditions: {class:{enabled,regex}, title:{enabled,regex}, onAllWorkspaces:{enabled,value}, above:{enabled,value}, skipTaskbar:{enabled,value}, fullscreen:{enabled,value}, maximized:{enabled,value}}, actions: {onAllWorkspaces:{enabled,value}, above:{enabled,value}, openOnNewWorkspace:{enabled,value}, ignore:{enabled,value}, close:{enabled,value}, geometry:{enabled,x,y,w,h}}}"
         description: "One element of the window-rules setting, as rules-ui writes it and rules#_matches and rules#_applyOne read it. Only `enabled` is edited for the boolean conditions and actions; their `value` stays at its default. geometry is in percentages of the work area. Rules saved before an action existed get it filled in, disabled, when opened in the editor."
+      - id: MARGIN_PX
+        default: 24
+        description: "What the overlay keeps free above and below it when the screen is too short for its height (_fitHeight): it is then the primary work area's height less this margin on both sides, and its page scrolls."
+    functions:
+      - id: _fitHeight
+        description: "Sets the overlay's one height as it opens: the form's, its tallest page, measured once with a saved rule's form showing (Delete included), which the list replaces before anything is drawn; less only when the work area is too short (MARGIN_PX). So it neither grows nor shrinks from page to page, and a short list leaves room below it. The form is as tall whatever the rule: a toggle has the same size on and off (stylesheet's .bwm-toggle), where the outline only an 'on' toggle had made every enabled row 2px taller — the form of a rule with three actions on outgrew the height measured on a blank one and scrolled (seen in the test machine, 2026-10-20)."
+      - id: _showEditor
+        description: "One rule's form in place of the list, the form's tab highlighted and named for it (New rule, Edit rule) and no list tab, the list's live updates dropped. A page is never destroyed from inside one of its own buttons: a press on a rule, and every button of the form, goes on at the next idle (_later)."
   - id: preferences
     type: "@View"
     src: borshevik-workspace-manager@komorebinator/prefs.js
@@ -1104,7 +1115,7 @@ behaviour:
         when: The user closes the app, and Android, back at its home screen, brings up the launcher's Google Discover feed as a window of its own (class `waydroid.GoogleDiscoverWindow#<n>`) — not every time; seen on 2026-10-18 in four of seven such sessions, 0.15 s after the app closed, and never when the session was already running
         then: The window is closed as it appears, by the default rule that closes it (gschema, behaviour#window-rules#closed); no workspace is given to it or held by it. Without that rule the extension took it for a full-screen app (android#_fillsWindow) and made it full on a workspace, where it stayed, transparent and empty, until the user closed it — which broke nothing, and Android did not bring it back in that session. In Waydroid's multi-window mode Android's home screen is never shown, so the feed beside it can never be reached, and LineageOS's launcher has no setting to turn it off
   - id: window-rules
-    description: "Window rules adjust what the extension does to particular apps; they do not change the rules above. A rule matches windows by class and title and can stick them to all workspaces, keep them on top, give them a fixed geometry, open them on a workspace of their own, leave them alone — never managed, but still shown in the indicator (rules#isIgnored) — or close them as they open, for a window that is of no use and would otherwise take a place (rules#isClosed). A window stuck to all workspaces, a dialog, or one hidden from the taskbar is not part of the wall at all (windows#isRelevant). A rule saved in rules-ui applies at once to the windows already open, except for leaving a window alone and closing it, which only take effect for windows opened after it: closing a window already open, maybe one the user is working in, is not what saving a rule should do."
+    description: "Window rules adjust what the extension does to particular apps; they do not change the rules above. A rule matches windows by class and title and can stick them to all workspaces, keep them on top, give them a fixed geometry, open them on a workspace of their own, leave them alone — never managed, but still shown in the indicator (rules#isIgnored) — or close them as they open, for a window that is of no use and would otherwise take a place (rules#isClosed). A window stuck to all workspaces, a dialog, or one hidden from the taskbar is not part of the wall at all (windows#isRelevant). A rule saved in rules-ui applies at once to the windows already open, except for leaving a window alone and closing it, which only take effect for windows opened after it: closing a window already open, maybe one the user is working in, is not what saving a rule should do. A rule picks some windows, never all: one whose only conditions are empty patterns, which every class and title match, matches no window (rules#narrows), and rules-ui will not save it."
     scenarios:
       - id: own-workspace
         given: A rule opens Steam's windows on a workspace of their own, and a Steam window is already open on workspace T
@@ -1122,6 +1133,45 @@ behaviour:
         given: Workspace S has tiles A and B, and a rule closes windows of app X
         when: A window of X opens, maximized
         then: "It is closed as it appears: it gets no workspace of its own, nothing on S moves, and the view stays on S"
+      - id: empty-pattern-picks-nothing
+        given: "A rule saved before rules-ui refused it: its only condition the class pattern, on and empty, and it closes the windows it matches"
+        when: A window opens
+        then: "It stays open and is placed like any other: the rule picks no window"
+  - id: rules-overlay
+    description: "The window rules overlay (rules-ui) holds still and says where the user is. It keeps one height whatever it shows, so it does not grow and shrink under the pointer, and shows a rule's form whole, without scrolling, wherever the screen has room for it. A rule is edited on a page of its own, named in the header like a tab — New rule, or Edit rule for a saved one — and left by Save, Cancel or either tab. Nothing is saved but by Save: Cancel and a tab leave the saved rules as they were. Save takes only a rule that picks some windows, with patterns that are patterns (behaviour#window-rules), and a rule saved applies at once to the windows open."
+    scenarios:
+      - id: one-height
+        given: The overlay is open on the Rules tab
+        when: The user opens a rule
+        then: The form takes the list's place at the same height, and shows the whole rule without scrolling
+      - id: edit-rule-tab
+        given: The overlay is open on the Rules tab
+        when: The user opens a saved rule
+        then: The header's rule button reads Edit rule and is highlighted, no list tab is, and the form has Delete
+      - id: new-rule-tab
+        given: The overlay is open
+        when: The user presses New rule
+        then: "The header's rule button reads New rule and is highlighted, the form has no Delete, and Save is unusable: the rule's only condition is the class pattern, empty"
+      - id: pattern-picks-windows
+        given: A new rule's form is open
+        when: The user types a class pattern
+        then: Save can be used
+      - id: invalid-pattern
+        given: A new rule's form is open with a class pattern typed
+        when: The user makes the pattern one that is not valid
+        then: Save is unusable again
+      - id: cancel-changes-nothing
+        given: A saved rule's form is open and the user has turned one of its actions on
+        when: The user presses Cancel
+        then: The Rules tab is shown again and the saved rules are as they were
+      - id: save-applies
+        given: Window W is open and the user has started a rule from it on the Windows tab and turned Always on top on
+        when: The user presses Save
+        then: The Windows tab is shown again, the rule is saved for W's class, W is on top at once, and W's section lists the rule
+      - id: delete-removes
+        given: A saved rule's form is open
+        when: The user presses Delete
+        then: The Rules tab is shown again with one rule fewer, and the rule is no longer saved
   - id: indicator
     description: "The panel indicator shows the wall as it is at every moment — each workspace's button with the icons of the windows on it — and lets the user reorder it. A workspace is reordered by dragging its button and inserting it between two others, as tabs are reordered: the buttons around the insertion point move apart to open a gap where it will go, so where it lands is seen before it is dropped. Dropping it on another button, as before, gave no such sign, and dragging right left it after the target rather than in its place (issue #4). A drag the user takes back — Escape, or a release away from the indicator — changes nothing. The '+' of the last, empty workspace can be dragged the same way, to put an empty workspace in the gap and switch to it. While a drag is under way the indicator is not rebuilt, whatever changes meanwhile; it catches up as the drag ends."
     scenarios:

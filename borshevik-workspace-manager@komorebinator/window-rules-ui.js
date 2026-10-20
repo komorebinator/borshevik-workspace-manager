@@ -12,6 +12,9 @@ import Shell  from 'gi://Shell';
 import St     from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { gettext as _ } from 'resource:///org/gnome/shell/extensions/extension.js';
+import { savable } from './rules.js';
+
+const MARGIN_PX = 24;   // kept free above and below the overlay when the screen is too short for it
 
 const LABELS = () => ({
     class:              _('WM Class'),
@@ -41,10 +44,11 @@ export class WindowRulesUI {
 
     open(opts = {}) {
         if (this._widget) return;
-        this._initialTab = opts.tab ?? 0;
-        this._isEditing  = false;
+        this._activeTab = opts.tab ?? 0;
         this._build();
         Main.layoutManager.addTopChrome(this._widget);
+        this._fitHeight();
+        this._switchTab(this._activeTab);
         global.stage.set_key_focus(this._widget);
     }
 
@@ -62,12 +66,16 @@ export class WindowRulesUI {
         this._refreshHandles = null;
     }
 
+    // after the handler that asked for it: a page is never destroyed from inside one of its buttons
+    _later(fn) {
+        this._ext._defer(() => { if (this._widget) fn(); });
+    }
+
     // ── Build ────────────────────────────────────────────────────────────────
 
     _build() {
         const monitor = Main.layoutManager.primaryMonitor;
         const W = Math.min(680, Math.round(monitor.width  * 0.55));
-        const H = Math.min(580, Math.round(monitor.height * 0.72));
 
         this._widget = new St.BoxLayout({
             style_class: 'bwm-rules-overlay',
@@ -75,9 +83,7 @@ export class WindowRulesUI {
             reactive: true,
             can_focus: true,
             width:  W,
-            height: H,
             x: Math.round(monitor.x + (monitor.width  - W) / 2),
-            y: Math.round(monitor.y + (monitor.height - H) / 2),
         });
 
         // ── Header ──
@@ -90,6 +96,16 @@ export class WindowRulesUI {
             y_align: Clutter.ActorAlign.CENTER,
             x_expand: true,
         }));
+
+        // the form's own tab: New rule, or Edit rule while a saved one is open, highlighted then
+        this._ruleBtn = new St.Button({
+            label: _('New rule'),
+            style_class: 'bwm-rules-tab',
+            reactive: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        this._ruleBtn.connect('clicked', () => this._showEditor(this._blankRule(null)));
+        header.add_child(this._ruleBtn);
 
         this._tabBtns = [];
         for (const [label, idx] of [[_('Windows'), 0], [_('Rules'), 1]]) {
@@ -111,18 +127,30 @@ export class WindowRulesUI {
 
         this._widget.add_child(new St.Widget({ style_class: 'bwm-rules-separator', x_expand: true }));
 
-        // ── Content area ──
+        // ── Content area: a tab's list, or one rule's form ──
         this._contentBox = new St.BoxLayout({ vertical: true, x_expand: true, y_expand: true });
         this._widget.add_child(this._contentBox);
+    }
 
-        this._switchTab(this._initialTab);
+    // One height whichever page is shown, so the overlay does not grow and shrink under the user:
+    // the form's, its tallest, measured once as it opens; less only when the work area is, and
+    // then the page scrolls.
+    _fitHeight() {
+        const wa = Main.layoutManager.getWorkAreaForMonitor(Main.layoutManager.primaryIndex);
+        // with Delete, which only a saved rule's form has; replaced by the list before it is drawn
+        this._showEditor(this._blankRule(null), false);
+        const [, natural] = this._widget.get_preferred_height(this._widget.width);
+        const height = Math.min(natural, wa.height - 2 * MARGIN_PX);
+        this._widget.height = height;
+        this._widget.y = Math.round(wa.y + (wa.height - height) / 2);
     }
 
     _switchTab(idx) {
         this._disconnectRefresh();
-        this._isEditing = false;
         this._activeTab = idx;
         this._contentBox.destroy_all_children();
+        this._ruleBtn.label = _('New rule');
+        this._ruleBtn.style_class = 'bwm-rules-tab';
         this._tabBtns.forEach((b, i) => {
             b.style_class = i === idx
                 ? 'bwm-rules-tab bwm-rules-tab-active'
@@ -140,8 +168,9 @@ export class WindowRulesUI {
         scroll.set_child(vbox);
         this._contentBox.add_child(scroll);
 
+        // a form is a page of its own, which drops these: nothing rebuilds under an edit
         const tracker = Shell.WindowTracker.get_default();
-        const refresh = () => { if (!this._isEditing) this._switchTab(0); };
+        const refresh = () => this._switchTab(0);
         this._refreshHandles = [
             [global.workspace_manager, global.workspace_manager.connect('active-workspace-changed', refresh)],
             [tracker, tracker.connect('tracked-windows-changed', refresh)],
@@ -190,25 +219,19 @@ export class WindowRulesUI {
         winRow.add_child(labels);
 
         // Applied rules
-        const rules   = this._getRules();
         const applied = this._ext._appliedRules(win);
-        for (const rule of rules) {
-            if (!applied.has(rule.id)) continue;
-            this._appendRuleRow(section, rule, win);
+        for (const rule of this._getRules()) {
+            if (applied.has(rule.id)) this._appendRuleRow(section, rule);
         }
 
-        // New rule button
+        // New rule, started from this window
         const newBtn = new St.Button({
             label: _('+ New rule for this window'),
             style_class: 'bwm-rules-new-btn',
             x_align: Clutter.ActorAlign.START,
             reactive: true,
         });
-        newBtn.connect('clicked', () => {
-            this._isEditing = true;
-            section.remove_child(newBtn);
-            this._appendRuleRow(section, this._blankRule(win), win, true);
-        });
+        newBtn.connect('clicked', () => this._later(() => this._showEditor(this._blankRule(win))));
         section.add_child(newBtn);
     }
 
@@ -220,89 +243,57 @@ export class WindowRulesUI {
         scroll.set_child(vbox);
         this._contentBox.add_child(scroll);
 
-        const newBtn = new St.Button({
-            label: _('+ New rule'),
-            style_class: 'bwm-rules-new-btn',
-            x_align: Clutter.ActorAlign.START,
-            reactive: true,
-        });
-        newBtn.connect('clicked', () => {
-            this._isEditing = true;
-            this._appendRuleRow(vbox, this._blankRule(null), null, true, newBtn);
-        });
-        vbox.add_child(newBtn);
-
         for (const rule of this._getRules())
-            this._appendRuleRow(vbox, rule, null);
+            this._appendRuleRow(vbox, rule);
     }
 
-    // ── Inline rule row (accordion) ──────────────────────────────────────────
-
-    _appendRuleRow(container, rule, win, startExpanded = false, insertBefore = null) {
-        const isNew = !this._getRules().find(r => r.id === rule.id);
-
+    // A rule as a line of its list; pressed, it opens its form in place of the list.
+    _appendRuleRow(container, rule) {
         const rowBox = new St.BoxLayout({ vertical: true, x_expand: true, style_class: 'bwm-rules-rule-row' });
-        if (insertBefore)
-            container.insert_child_below(rowBox, insertBefore);
-        else
-            container.add_child(rowBox);
-
-        // Collapsed summary row
+        container.add_child(rowBox);
         const summaryRow = new St.BoxLayout({ x_expand: true, reactive: true, style_class: 'bwm-rules-summary-row' });
         rowBox.add_child(summaryRow);
-
-        const summaryLabel = new St.Label({
+        summaryRow.add_child(new St.Label({
             text: this._ruleSummary(rule),
             style_class: 'bwm-rules-summary-text',
             x_expand: true,
             y_align: Clutter.ActorAlign.CENTER,
-        });
-        summaryRow.add_child(summaryLabel);
-
-        const chevron = new St.Label({
-            text: startExpanded ? '▼' : '▶',
-            style_class: 'bwm-rules-chevron',
-            y_align: Clutter.ActorAlign.CENTER,
-        });
-        summaryRow.add_child(chevron);
-
-        // Detail editor box
-        const detailBox = new St.BoxLayout({
-            vertical: true, x_expand: true,
-            style_class: 'bwm-rules-detail',
-            visible: startExpanded,
-        });
-        rowBox.add_child(detailBox);
-
-        const collapse = () => {
-            detailBox.visible = false;
-            chevron.text = '▶';
-            detailBox.destroy_all_children();
-        };
-
-        if (startExpanded)
-            this._populateEditor(detailBox, rule, win, summaryLabel, isNew, collapse);
-
+        }));
+        summaryRow.add_child(new St.Label({ text: '▶', style_class: 'bwm-rules-chevron', y_align: Clutter.ActorAlign.CENTER }));
         summaryRow.connect('button-press-event', () => {
-            const show = !detailBox.visible;
-            detailBox.visible = show;
-            chevron.text = show ? '▼' : '▶';
-            if (show) {
-                this._isEditing = true;
-                detailBox.destroy_all_children();
-                this._populateEditor(detailBox, rule, win, summaryLabel, isNew, collapse);
-            } else {
-                this._isEditing = false;
-            }
+            this._later(() => this._showEditor(rule));
             return Clutter.EVENT_STOP;
         });
     }
 
-    // ── Rule editor ──────────────────────────────────────────────────────────
+    // ── Rule form ────────────────────────────────────────────────────────────
 
-    _populateEditor(box, rule, _win, summaryLabel, isNew, onCollapse) {
+    // In place of the list, its own header button highlighted: either tab leaves it, as Cancel
+    // does. isNew: a rule not saved yet, whose form has no Delete.
+    _showEditor(rule, isNew = !this._getRules().some(r => r.id === rule.id)) {
+        this._disconnectRefresh();
+        this._contentBox.destroy_all_children();
+        this._tabBtns.forEach(b => { b.style_class = 'bwm-rules-tab'; });
+        this._ruleBtn.label = isNew ? _('New rule') : _('Edit rule');
+        this._ruleBtn.style_class = 'bwm-rules-tab bwm-rules-tab-active';
+        const scroll = new St.ScrollView({ x_expand: true, y_expand: true, style_class: 'bwm-rules-scroll' });
+        const form = new St.BoxLayout({ vertical: true, x_expand: true, style_class: 'bwm-rules-detail' });
+        scroll.set_child(form);
+        this._contentBox.add_child(scroll);
+        this._populateEditor(form, rule, isNew, () => this._later(() => this._switchTab(this._activeTab)));
+    }
+
+    // onDone: back to the list the form was opened from, whichever button ended it
+    _populateEditor(box, rule, isNew, onDone) {
         const draft   = JSON.parse(JSON.stringify(rule));
-        const refresh = () => { summaryLabel.text = this._ruleSummary(draft); };
+        const summary = new St.Label({ text: this._ruleSummary(draft), style_class: 'bwm-rules-summary-text' });
+        box.add_child(summary);
+        let saveBtn = null;
+        // Save only for a rule that picks windows and whose patterns are patterns (rules#savable)
+        const refresh = () => {
+            summary.text = this._ruleSummary(draft);
+            if (saveBtn) saveBtn.reactive = savable(draft);
+        };
 
         // Ensure all action fields exist (rules saved before new actions were added)
         draft.actions.onAllWorkspaces    ??= { enabled: false, value: true };
@@ -317,48 +308,41 @@ export class WindowRulesUI {
         for (const key of ['class', 'title'])
             box.add_child(this._makeRegexRow(key, draft.conditions[key], refresh));
         for (const key of ['onAllWorkspaces', 'above', 'skipTaskbar', 'fullscreen', 'maximized'])
-            box.add_child(this._makeBoolCondRow(key, draft.conditions[key]));
+            box.add_child(this._makeBoolCondRow(key, draft.conditions[key], refresh));
 
         // Actions
         box.add_child(new St.Label({ text: _('Actions'), style_class: 'bwm-rules-section-label' }));
         for (const key of ['onAllWorkspaces', 'above', 'openOnNewWorkspace', 'ignore', 'close'])
-            box.add_child(this._makeActionBoolRow(key, draft.actions[key]));
-        box.add_child(this._makeGeomRow(draft.actions.geometry));
+            box.add_child(this._makeActionBoolRow(key, draft.actions[key], refresh));
+        box.add_child(this._makeGeomRow(draft.actions.geometry, refresh));
 
-        // Buttons
+        // Buttons: Save and Cancel, Delete apart on the other side
         const btnRow = new St.BoxLayout({ style_class: 'bwm-rules-btn-row', x_expand: true });
         box.add_child(btnRow);
 
-        const saveBtn = new St.Button({ label: _('Save'), style_class: 'bwm-rules-save-btn', reactive: true });
+        saveBtn = new St.Button({ label: _('Save'), style_class: 'bwm-rules-save-btn', reactive: savable(draft) });
         saveBtn.connect('clicked', () => {
-            if (!this._hasEnabledCondition(draft)) return;
+            if (!savable(draft)) return;
             const rules = this._getRules();
             const idx   = rules.findIndex(r => r.id === draft.id);
             if (idx >= 0) rules[idx] = draft;
             else rules.push(draft);
             this._saveRules(rules);
             this._ext._applyRuleToAll(draft);
-            this._isEditing = false;
-            onCollapse?.();
-            const tab = this._activeTab;
-            this._ext._defer(() => { if (this._widget) this._switchTab(tab); });
+            onDone();
         });
         btnRow.add_child(saveBtn);
 
         const cancelBtn = new St.Button({ label: _('Cancel'), style_class: 'bwm-rules-cancel-btn', reactive: true });
-        cancelBtn.connect('clicked', () => {
-            this._isEditing = false;
-            GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => { onCollapse?.(); return GLib.SOURCE_REMOVE; });
-        });
+        cancelBtn.connect('clicked', () => onDone());
         btnRow.add_child(cancelBtn);
 
         if (!isNew) {
             btnRow.add_child(new St.Widget({ x_expand: true }));
             const delBtn = new St.Button({ label: _('Delete'), style_class: 'bwm-rules-del-btn', reactive: true });
             delBtn.connect('clicked', () => {
-                const rules = this._getRules().filter(r => r.id !== rule.id);
-                this._saveRules(rules);
-                box.get_parent().destroy();
+                this._saveRules(this._getRules().filter(r => r.id !== rule.id));
+                onDone();
             });
             btnRow.add_child(delBtn);
         }
@@ -368,7 +352,7 @@ export class WindowRulesUI {
 
     _makeRegexRow(key, cond, onChange) {
         const row = new St.BoxLayout({ style_class: 'bwm-rules-row', x_expand: true });
-        row.add_child(this._makeToggle(cond.enabled, v => { cond.enabled = v; }));
+        row.add_child(this._makeToggle(cond.enabled, v => { cond.enabled = v; onChange?.(); }));
         row.add_child(new St.Label({ text: LABELS()[key] ?? key, style_class: 'bwm-rules-row-label', y_align: Clutter.ActorAlign.CENTER }));
         const entry = new St.Entry({ text: cond.regex ?? '', style_class: 'bwm-rules-entry', x_expand: true });
         entry.get_clutter_text().connect('text-changed', () => {
@@ -382,27 +366,27 @@ export class WindowRulesUI {
         return row;
     }
 
-    _makeBoolCondRow(key, cond) {
+    _makeBoolCondRow(key, cond, onChange) {
         const row = new St.BoxLayout({ style_class: 'bwm-rules-row', x_expand: true });
-        row.add_child(this._makeToggle(cond.enabled, v => { cond.enabled = v; }));
+        row.add_child(this._makeToggle(cond.enabled, v => { cond.enabled = v; onChange?.(); }));
         row.add_child(new St.Label({ text: LABELS()[key] ?? key, style_class: 'bwm-rules-row-label', x_expand: true, y_align: Clutter.ActorAlign.CENTER }));
         // value is always true — we match windows that HAVE this property set
         return row;
     }
 
-    _makeActionBoolRow(key, action) {
+    _makeActionBoolRow(key, action, onChange) {
         const row = new St.BoxLayout({ style_class: 'bwm-rules-row', x_expand: true });
-        row.add_child(this._makeToggle(action.enabled, v => { action.enabled = v; }));
+        row.add_child(this._makeToggle(action.enabled, v => { action.enabled = v; onChange?.(); }));
         row.add_child(new St.Label({ text: LABELS()[key] ?? key, style_class: 'bwm-rules-row-label', x_expand: true, y_align: Clutter.ActorAlign.CENTER }));
         // value is always true — enable toggle is sufficient
         return row;
     }
 
-    _makeGeomRow(geom) {
+    _makeGeomRow(geom, onChange) {
         const box = new St.BoxLayout({ vertical: true, x_expand: true, style_class: 'bwm-rules-geom-box' });
 
         const headerRow = new St.BoxLayout({ style_class: 'bwm-rules-row', x_expand: true });
-        headerRow.add_child(this._makeToggle(geom.enabled, v => { geom.enabled = v; }));
+        headerRow.add_child(this._makeToggle(geom.enabled, v => { geom.enabled = v; onChange?.(); }));
         headerRow.add_child(new St.Label({ text: LABELS().geometry, style_class: 'bwm-rules-row-label', x_expand: true, y_align: Clutter.ActorAlign.CENTER }));
         box.add_child(headerRow);
 
@@ -488,9 +472,5 @@ export class WindowRulesUI {
             .map(([k]) => k === 'geometry' ? 'geom' : (LABELS()[k] ?? k))
             .join(', ');
         return (conds || _('(no conditions)')) + '  →  ' + (acts || _('(no actions)'));
-    }
-
-    _hasEnabledCondition(rule) {
-        return Object.values(rule.conditions).some(c => c.enabled);
     }
 }

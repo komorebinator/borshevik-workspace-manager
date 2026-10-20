@@ -10,6 +10,7 @@
 // given.active — the workspace shown before `steps` (default 0).
 // given.steps — actions done after the layout is built, for the history a scenario needs.
 // given.settings — extension settings for this scenario; the view-moving ones are off otherwise.
+//   window-rules is 'kind:Name', one rule of that kind on test window Name, or the setting's JSON.
 // given.focusMode — GNOME's focus mode, 'sloppy' (Borshevik's default, and so the default here),
 //   'click' or 'mouse'.
 // when — one action. then — what must be seen afterwards:
@@ -35,7 +36,11 @@
 // ['wait', null, seconds] — the user does nothing, ['resizeCorner', name, [dw, dh]] — a floating
 // window's bottom right corner dragged by shares of the work area, ['churn', null, n] — n windows
 // opened and closed one after another, every other one maximized, ['addRemoveWorkspace'] — a
-// workspace added at the end and removed again, as GNOME's dynamic workspaces do.
+// workspace added at the end and removed again, as GNOME's dynamic workspaces do; the window
+// rules overlay: ['rulesOpen'] — opened with its key, ['rulesClick', control] — a control clicked
+// (ruleButton, tab:<i>, row:<i>, newFor:<window>, save, cancel, delete, condition:<label>,
+// action:<label>), ['rulesType', 'class' | 'title', text] — a pattern typed into the form. h.rules
+// is the overlay as shown (null when closed), h.saved the saved rules as `class|actions`.
 // A step may end with { quick: true }: the next one follows as soon as nothing changes for a poll,
 // as a person acting at once would, rather than after the shell has been still a while.
 //
@@ -1038,6 +1043,140 @@ export const scenarios = [
         // gone: closed as it appears, so it is not waited for
         when: ['open', 'Closed', { maximized: true, gone: true }],
         then: { workspaces: [{ left: 'A', right: 'B' }], active: 0 },
+    },
+    {
+        // its only condition an empty class pattern, which every window matches: saved before the
+        // editor refused it, it must not close every window that opens
+        id: 'window-rules#empty-pattern-picks-nothing',
+        given: {
+            workspaces: [{ floating: ['X'] }],
+            settings: { 'window-rules': '[{"id":"test-empty-pattern","conditions":{"class":{"enabled":true,"regex":""},"title":{"enabled":false,"regex":""},"onAllWorkspaces":{"enabled":false,"value":true},"above":{"enabled":false,"value":true},"skipTaskbar":{"enabled":false,"value":true},"fullscreen":{"enabled":false,"value":true},"maximized":{"enabled":false,"value":true}},"actions":{"onAllWorkspaces":{"enabled":false,"value":true},"above":{"enabled":false,"value":true},"openOnNewWorkspace":{"enabled":false,"value":true},"ignore":{"enabled":false,"value":true},"close":{"enabled":true,"value":true},"geometry":{"enabled":false,"x":0,"y":0,"w":50,"h":50}}}]' },
+        },
+        when: ['open', 'W'],
+        then: { workspaces: [{ floating: ['X', 'W'] }], active: 0 },
+        skip: { planner: 'matching windows against rules is rules.js\'s, not the planner\'s' },
+    },
+
+    // ── rules-overlay ──────────────────────────────────────────────────────────
+    // The window rules overlay, worked as the user works it: opened with its key, its controls
+    // clicked where they are, patterns typed into its fields.
+    {
+        id: 'rules-overlay#one-height',
+        given: { workspaces: [{ floating: ['W'] }], steps: [['rulesOpen'], ['rulesClick', 'tab:1']] },
+        when: ['rulesClick', 'row:1'],
+        then: {
+            check: h => {
+                const r = h.rules, b = h.before.rules;
+                if (r?.page !== 'form') return `no form was opened (the overlay shows ${r?.page ?? 'nothing'})`;
+                if (r.height !== b.height) return `the overlay went from ${b.height} to ${r.height} high`;
+                return r.scrolls ? 'the form has to be scrolled through' : null;
+            },
+        },
+        skip: { planner: 'the overlay is not the planner\'s' },
+    },
+    {
+        id: 'rules-overlay#edit-rule-tab',
+        given: { workspaces: [{ floating: ['W'] }], steps: [['rulesOpen'], ['rulesClick', 'tab:1']] },
+        when: ['rulesClick', 'row:0'],
+        then: {
+            check: h => {
+                const r = h.rules;
+                if (r?.page !== 'form') return 'no form was opened';
+                if (r.ruleButton.label !== 'Edit rule' || !r.ruleButton.active)
+                    return `the header shows ${r.ruleButton.label}, ${r.ruleButton.active ? '' : 'not '}highlighted`;
+                if (r.tabs.some(Boolean)) return 'a list tab is still highlighted';
+                return r.delete ? null : 'a saved rule\'s form has no Delete';
+            },
+        },
+        skip: { planner: 'the overlay is not the planner\'s' },
+    },
+    {
+        id: 'rules-overlay#new-rule-tab',
+        given: { workspaces: [{ floating: ['W'] }], steps: [['rulesOpen']] },
+        when: ['rulesClick', 'ruleButton'],
+        then: {
+            check: h => {
+                const r = h.rules;
+                if (r?.page !== 'form') return 'no form was opened';
+                if (r.ruleButton.label !== 'New rule' || !r.ruleButton.active)
+                    return `the header shows ${r.ruleButton.label}, ${r.ruleButton.active ? '' : 'not '}highlighted`;
+                if (r.delete) return 'a rule not saved yet has Delete';
+                return r.save ? 'Save takes a rule whose only condition is an empty class pattern' : null;
+            },
+        },
+        skip: { planner: 'the overlay is not the planner\'s' },
+    },
+    {
+        id: 'rules-overlay#pattern-picks-windows',
+        given: { workspaces: [{ floating: ['W'] }], steps: [['rulesOpen'], ['rulesClick', 'ruleButton']] },
+        when: ['rulesType', 'class', 'org\\.example\\.App'],
+        then: {
+            check: h => (h.rules?.save ? null : 'Save stays unusable for a rule with a class pattern'),
+        },
+        skip: { planner: 'the overlay is not the planner\'s' },
+    },
+    {
+        id: 'rules-overlay#invalid-pattern',
+        given: {
+            workspaces: [{ floating: ['W'] }],
+            steps: [['rulesOpen'], ['rulesClick', 'ruleButton'], ['rulesType', 'class', 'org']],
+        },
+        when: ['rulesType', 'class', '(org'],
+        then: {
+            check: h => (h.rules?.save ? 'Save takes a pattern that is not one' : null),
+        },
+        skip: { planner: 'the overlay is not the planner\'s' },
+    },
+    {
+        id: 'rules-overlay#cancel-changes-nothing',
+        given: {
+            workspaces: [{ floating: ['W'] }],
+            steps: [['rulesOpen'], ['rulesClick', 'tab:1'], ['rulesClick', 'row:0'], ['rulesClick', 'action:Always on top']],
+        },
+        when: ['rulesClick', 'cancel'],
+        then: {
+            check: h => {
+                const r = h.rules;
+                if (!h.before.rules?.summary?.includes('Always on top'))
+                    return 'the toggle was never turned on: the scenario tests nothing';
+                if (r?.page !== 'rules' || !r.tabs[1]) return `Cancel did not go back to the rules (the overlay shows ${r?.page})`;
+                return JSON.stringify(h.saved) === JSON.stringify(h.before.saved) ? null
+                    : `Cancel saved: ${h.saved.join(', ')}`;
+            },
+        },
+        skip: { planner: 'the overlay is not the planner\'s' },
+    },
+    {
+        id: 'rules-overlay#save-applies',
+        given: {
+            workspaces: [{ floating: ['W'] }],
+            steps: [['rulesOpen'], ['rulesClick', 'newFor:W'], ['rulesClick', 'action:Always on top']],
+        },
+        when: ['rulesClick', 'save'],
+        then: {
+            check: h => {
+                const r = h.rules;
+                if (r?.page !== 'windows') return `Save did not go back to the windows (the overlay shows ${r?.page})`;
+                if (!h.saved.some(x => x === 'org.borshevik.Test.W|above')) return `no rule saved for W: ${h.saved.join(', ')}`;
+                if (!h.win('W').above) return 'the rule was not applied to W, already open';
+                return r.rows.length ? null : 'W\'s section lists no rule';
+            },
+        },
+        skip: { planner: 'the overlay is not the planner\'s' },
+    },
+    {
+        id: 'rules-overlay#delete-removes',
+        given: { workspaces: [{ floating: ['W'] }], steps: [['rulesOpen'], ['rulesClick', 'tab:1'], ['rulesClick', 'row:0']] },
+        when: ['rulesClick', 'delete'],
+        then: {
+            check: h => {
+                const r = h.rules;
+                if (r?.page !== 'rules') return `Delete did not go back to the rules (the overlay shows ${r?.page})`;
+                if (h.saved.length !== h.before.saved.length - 1) return `${h.saved.length} rules saved, not ${h.before.saved.length - 1}`;
+                return r.rows.length === h.saved.length ? null : `the list shows ${r.rows.length} rules, ${h.saved.length} are saved`;
+            },
+        },
+        skip: { planner: 'the overlay is not the planner\'s' },
     },
 
     // ── indicator ──────────────────────────────────────────────────────────────

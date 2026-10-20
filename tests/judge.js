@@ -80,7 +80,10 @@ function view(st, before, initial) {
         rect: n => rectOf(st, n), win,
         windowsOn: i => st.windows.filter(w => w.ws === i),
         share: (w, h) => ({ width: w * st.wa.width, height: h * st.wa.height }),
-        before: { rect: n => rectOf(before, n) },
+        before: { rect: n => rectOf(before, n), rules: before.rules, saved: before.saved },
+        // the rules overlay (null when closed) and the saved rules as `class|actions`: the test
+        // machine's only
+        rules: st.rules, saved: st.saved,
         unchanged: n => changed(before, n, ''),
         unchangedSinceGiven: n => changed(initial, n, 'since the layout was built'),
     };

@@ -8,6 +8,28 @@
 
 import { LOG, name } from './log.js';
 
+const PATTERNS = ['class', 'title'];
+
+// Whether a rule picks some windows rather than all: one of its conditions is on and narrows —
+// a pattern that is not empty, or a flag (on every workspace, above, ...). An empty pattern
+// matches every class and title, so a rule whose only condition is one would apply to every
+// window there is.
+export function narrows(rule) {
+    return Object.entries(rule.conditions ?? {}).some(([key, c]) =>
+        c?.enabled && (!PATTERNS.includes(key) || (c.regex ?? '') !== ''));
+}
+
+// Whether a rule can be saved: it narrows, and every pattern it has on is one; a pattern that is
+// not would match no window at all.
+export function savable(rule) {
+    if (!narrows(rule)) return false;
+    return PATTERNS.every(key => {
+        const c = rule.conditions?.[key];
+        if (!c?.enabled) return true;
+        try { new RegExp(c.regex ?? ''); return true; } catch { return false; }
+    });
+}
+
 export class WindowRules {
     constructor({ settings, registry }) {
         this._settings = settings;
@@ -54,6 +76,8 @@ export class WindowRules {
     }
 
     _matches(win, rule) {
+        // one saved before the editor refused it would take every window
+        if (!narrows(rule)) return false;
         const c = rule.conditions ?? {};
         if (c.class?.enabled) {
             try { if (!new RegExp(c.class.regex).test(win.get_wm_class() ?? '')) return false; } catch { return false; }

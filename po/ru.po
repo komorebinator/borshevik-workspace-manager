@@ -64,8 +64,8 @@ msgstr "Нет окон на текущем рабочем столе."
 msgid "+ New rule for this window"
 msgstr "+ Новое правило для этого окна"
 
-msgid "+ New rule"
-msgstr "+ Новое правило"
+msgid "New rule"
+msgstr "Новое правило"
 
 msgid "Conditions"
 msgstr "Условия"
@@ -152,3 +152,6 @@ msgstr "Записывает в журнал, что делает расшире
 msgid "Performance report copied"
 msgstr "Отчёт производительности скопирован"
 
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:276
+msgid "Edit rule"
+msgstr "Изменить правило"

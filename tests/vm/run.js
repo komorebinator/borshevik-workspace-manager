@@ -63,6 +63,68 @@ function shellHelper(Main) {
         if (!s) throw new Error('the extension is not running');
         return s;
     };
+    // the window rules overlay, its page (a list, or one rule's form) and what is on it
+    const descendants = a => a.get_children().flatMap(c => [c, ...descendants(c)]);
+    const rulesUI = () => Main.extensionManager.lookup(UUID)?.stateObj?._rulesUI ?? null;
+    const rulesPage = ui => {
+        const scroll = ui._contentBox.get_first_child();
+        return { scroll, page: scroll ? (scroll.child ?? scroll.get_child()) : null };
+    };
+    const has = cls => c => c.has_style_class_name?.(cls);
+    const rulesView = () => {
+        const ui = rulesUI(), w = ui?._widget;
+        if (!w) return null;
+        const { scroll, page } = rulesPage(ui);
+        const all = page ? descendants(page) : [];
+        const form = !!page?.has_style_class_name('bwm-rules-detail');
+        const adj = scroll?.vadjustment;
+        return {
+            height: Math.round(w.height),
+            page: form ? 'form' : ui._activeTab === 0 ? 'windows' : 'rules',
+            ruleButton: { label: ui._ruleBtn.label, active: ui._ruleBtn.has_style_class_name('bwm-rules-tab-active') },
+            tabs: ui._tabBtns.map(b => b.has_style_class_name('bwm-rules-tab-active')),
+            scrolls: !!adj && adj.upper - adj.page_size > 1,
+            rows: form ? [] : all.filter(has('bwm-rules-summary-text')).map(c => c.text),
+            summary: form ? all.find(has('bwm-rules-summary-text'))?.text ?? null : null,
+            save: form ? !!all.find(has('bwm-rules-save-btn'))?.reactive : null,
+            delete: form ? all.some(has('bwm-rules-del-btn')) : null,
+        };
+    };
+    // a control of the overlay by what it is to the user: ruleButton, tab:<i>, row:<i> (of the
+    // list shown), newFor:<window>, save, cancel, delete, condition:<label>, action:<label>
+    const rulesControl = target => {
+        const ui = rulesUI();
+        if (!ui?._widget) return null;
+        const { page } = rulesPage(ui);
+        const all = page ? descendants(page) : [];
+        const [kind, arg] = target.split(/:(.*)/s);
+        switch (kind) {
+        case 'ruleButton': return ui._ruleBtn;
+        case 'tab': return ui._tabBtns[Number(arg)];
+        case 'row': return all.filter(has('bwm-rules-summary-row'))[Number(arg)] ?? null;
+        case 'newFor': {
+            const section = all.filter(has('bwm-rules-section'))
+                .find(s => descendants(s).some(c => c.has_style_class_name?.('bwm-rules-win-class') && c.text === arg));
+            return section ? descendants(section).find(has('bwm-rules-new-btn')) : null;
+        }
+        case 'save': return all.find(has('bwm-rules-save-btn')) ?? null;
+        case 'cancel': return all.find(has('bwm-rules-cancel-btn')) ?? null;
+        case 'delete': return all.find(has('bwm-rules-del-btn')) ?? null;
+        case 'condition': case 'action': {
+            // the form's two sections in order, told apart by position: their headings are translated
+            let section = -1;
+            for (const c of page.get_children()) {
+                if (c.has_style_class_name?.('bwm-rules-section-label')) { section++; continue; }
+                if (section !== (kind === 'condition' ? 0 : 1)) continue;
+                const row = c.has_style_class_name?.('bwm-rules-row') ? c : descendants(c).find(has('bwm-rules-row'));
+                if (row && descendants(row).some(l => l.has_style_class_name?.('bwm-rules-row-label') && l.text === arg))
+                    return descendants(row).find(has('bwm-toggle'));
+            }
+            return null;
+        }
+        default: return null;
+        }
+    };
     return {
         state() {
             const list = wins();
@@ -71,13 +133,23 @@ function shellHelper(Main) {
                 active: wm().get_active_workspace_index(), n: wm().n_workspaces,
                 overview: Main.overview.visible, wa: area(), stage: [global.stage.width, global.stage.height],
                 panel: panel(),
+                rules: rulesView(),
+                // the saved rules, each as its class pattern and the actions it has on
+                saved: (() => {
+                    try {
+                        return JSON.parse(settings().get_string('window-rules')).map(r =>
+                            `${r.conditions?.class?.enabled ? r.conditions.class.regex : ''}|` +
+                            Object.entries(r.actions ?? {}).filter(([, a]) => a.enabled).map(([k]) => k).join('+'));
+                    } catch { return null; }
+                })(),
+                focus: global.display.focus_window && isTest(global.display.focus_window) ? nameOf(global.display.focus_window) : null,
                 windows: list.map(w => {
                     const r = w.get_frame_rect();
                     return {
                         name: nameOf(w), ws: w.get_workspace()?.index() ?? -1,
                         rect: { x: r.x, y: r.y, width: r.width, height: r.height },
                         max: w.maximized_horizontally && w.maximized_vertically,
-                        fs: w.fullscreen, min: w.minimized, z: order.indexOf(w),
+                        fs: w.fullscreen, min: w.minimized, z: order.indexOf(w), above: w.is_above(),
                     };
                 }),
             });
@@ -147,6 +219,21 @@ function shellHelper(Main) {
             return 'ok';
         },
         hideOverview() { Main.overview.hide(); return 'ok'; },
+        // where a control of the rules overlay is, for a real click on it
+        rulesAt(target) {
+            const c = rulesControl(target);
+            if (!c) return 'none';
+            const [x, y] = c.get_transformed_position(), [cw, ch] = c.get_transformed_size();
+            return `${Math.round(x + cw / 2)},${Math.round(y + ch / 2)}`;
+        },
+        // text typed into a form's class or title pattern
+        rulesType(field, text) {
+            const ui = rulesUI();
+            const entries = descendants(rulesPage(ui).page).filter(has('bwm-rules-entry'));
+            entries[field === 'title' ? 1 : 0].set_text(text);
+            return 'ok';
+        },
+        closeRules() { rulesUI()?.close(); return 'ok'; },
     };
 }
 
@@ -364,6 +451,63 @@ function act(action) {
     case 'addRemoveWorkspace':
         shell('addRemoveWorkspace()');
         break;
+    case 'rulesOpen':
+        // as the user opens it, with its key
+        vm('key', 'super+r');
+        break;
+    case 'rulesClick': {
+        const at = shell(`rulesAt(${q(name)})`);
+        if (at === 'none') throw new Error(`no ${name} in the rules overlay`);
+        const [x, y] = at.split(',').map(Number);
+        const r = vm('drag', x, y, x, y, st.stage[0], st.stage[1]);
+        if (!r.ok) throw new Error(`click ${name}: ${r.err}`);
+        break;
+    }
+    case 'rulesType':
+        shell(`rulesType(${q(name)}, ${q(arg)})`);
+        break;
+    case 'place':
+        shell(`act(${q(name)}, 'place', ${arg[0]}, ${arg[1]})`);
+        break;
+    case 'drag': drag(st, name, arg); break;
+    case 'dragAway': drag(st, name, 'away'); break;
+    case 'reenable':
+        // turned off and on again: what it knew of the windows is gone
+        for (const on of [false, true]) {
+            shell(`extension(${on})`);
+            const start = Date.now();
+            while (shell('extensionOn()') !== String(on)) {
+                if (Date.now() - start > 10000) throw new Error(`the extension did not turn ${on ? 'on' : 'off'}`);
+                sleep(200);
+            }
+        }
+        break;
+    case 'wait':
+        // arg: seconds of the user doing nothing
+        sleep(arg * 1000);
+        break;
+    case 'resizeCorner': {
+        // a hand on the bottom right corner of a floating window, dragged by arg, shares of the
+        // work area; GTK's resize border lies just outside the frame
+        const r = st.windows.find(w => w.name === name).rect;
+        const x1 = r.x + r.width + 4, y1 = r.y + r.height + 4;
+        const res = vm('drag', x1, y1, Math.round(x1 + arg[0] * st.wa.width), Math.round(y1 + arg[1] * st.wa.height),
+            st.stage[0], st.stage[1]);
+        if (!res.ok) throw new Error(`resize: ${res.err}`);
+        break;
+    }
+    case 'churn':
+        // arg: how many windows are opened and closed one after another; every other one opens
+        // maximized, on a workspace of its own
+        for (let i = 0; i < arg; i++) {
+            const n = `churn${i}`;
+            vm(...openArgs(n, { maximized: i % 2 === 1 }, st.wa));
+            waitFor([n]);
+            settle(300);
+            shell(`act(${q(n)}, 'close')`);
+            settle(300);
+        }
+        break;
     case 'resizeEdge': {
         // a hand on the inner edge of a tile: GTK's resize border lies just outside the frame, so
         // only the border of the window on top can be grabbed there — the tile beside it, if it
@@ -456,6 +600,7 @@ function reset() {
         vm('droid', 'am', 'force-stop', 'com.android.settings');
         vm('droid', 'cmd', 'uimode', 'night', 'no');
     }
+    shell('closeRules()');
     shell('closeAll()');
     const start = Date.now();
     while (state().windows.length && Date.now() - start < 10000) sleep(300);
@@ -472,7 +617,9 @@ const nameOf = spec => typeof spec === 'string' ? spec : spec.name;
 function build(given) {
     if (given.focusMode) shell(`focusMode(${q(given.focusMode)})`);
     for (const [k, v] of Object.entries(given.settings ?? {}))
-        shell(`set(${q(k)}, ${q(k === 'window-rules' ? ruleFor(v) : v)})`);
+        // window-rules: 'kind:Class' for a rule of one kind on one test window, or the setting's
+        // own JSON for anything else
+        shell(`set(${q(k)}, ${q(k === 'window-rules' && !v.startsWith('[') ? ruleFor(v) : v)})`);
     given.workspaces.forEach((ws, i) => {
         if (i > 0) { shell(`activate(${state().n - 1})`); settle(500); }
         if (ws.full) {
