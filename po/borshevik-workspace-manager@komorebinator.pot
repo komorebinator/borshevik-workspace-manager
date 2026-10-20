@@ -17,128 +17,176 @@ msgstr ""
 "Content-Type: text/plain; charset=CHARSET\n"
 "Content-Transfer-Encoding: 8bit\n"
 
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:17
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:19
 msgid "WM Class"
 msgstr ""
 
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:18
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:20
 msgid "Title"
 msgstr ""
 
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:19
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:21
 msgid "Show on all workspaces"
 msgstr ""
 
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:20
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:22
 msgid "Always on top"
 msgstr ""
 
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:21
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:23
 msgid "Hidden from taskbar"
 msgstr ""
 
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:22
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:24
 msgid "Fullscreen"
 msgstr ""
 
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:23
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:25
 msgid "Maximized"
 msgstr ""
 
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:24
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:26
 msgid "Geometry (%)"
 msgstr ""
 
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:25
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:27
 msgid "Open on new workspace"
 msgstr ""
 
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:26
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:28
 msgid "Leave alone (no tiling or moving)"
 msgstr ""
 
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:87
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:29
+msgid "Close as it opens"
+msgstr ""
+
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:93
 msgid "Window Rules"
 msgstr ""
 
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:94
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:110
 msgid "Windows"
 msgstr ""
 
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:94
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:110
 msgid "Rules"
 msgstr ""
 
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:155
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:184
 msgid "No windows on current workspace."
 msgstr ""
 
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:201
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:228
 msgid "+ New rule for this window"
 msgstr ""
 
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:223
-msgid "+ New rule"
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:101
+msgid "New rule"
 msgstr ""
 
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:313
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:301
 msgid "Conditions"
 msgstr ""
 
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:320
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:308
 msgid "Actions"
 msgstr ""
 
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:329
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:317
 msgid "Save"
 msgstr ""
 
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:345
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:330
 msgid "Cancel"
 msgstr ""
 
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:354
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:336
 msgid "Delete"
 msgstr ""
 
 #: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:422
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:429
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:403
 msgid "ON"
 msgstr ""
 
 #: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:422
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:429
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:403
 msgid "OFF"
 msgstr ""
 
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:485
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:468
 msgid "(no conditions)"
 msgstr ""
 
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:485
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:468
 msgid "(no actions)"
 msgstr ""
 
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:30
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:79
 msgid "Open overview on last workspace"
 msgstr ""
 
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:31
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:118
 msgid "Debug logging"
 msgstr ""
 
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:35
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:83
 msgid "Go back"
 msgstr ""
 
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:35
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:83
 msgid "Open overview"
 msgstr ""
 
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:35
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:83
 msgid "Do nothing"
 msgstr ""
 
-#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:36
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:84
 msgid "When last window on workspace closes"
+msgstr ""
+
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:97
+msgid "Debug"
+msgstr ""
+
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:130
+msgid "Performance log"
+msgstr ""
+
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:131
+msgid "Counts how often the extension acts and how long it takes. Switching it on starts a new report; Copy takes it."
+msgstr ""
+
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:100
+msgid "Copy"
+msgstr ""
+
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:124
+msgid "The extension is not running"
+msgstr ""
+
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:107
+msgid "The journal could not be read"
+msgstr ""
+
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:111
+msgid "The debug log is empty"
+msgstr ""
+
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:116
+msgid "Debug log copied"
+msgstr ""
+
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:119
+msgid "Writes what the extension does to the journal. Copy takes the last %d minutes of it."
+msgstr ""
+
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:128
+msgid "Performance report copied"
+msgstr ""
+
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:276
+msgid "Edit rule"
 msgstr ""

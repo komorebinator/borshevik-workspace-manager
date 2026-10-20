@@ -46,6 +46,9 @@ msgstr "Открывать на новом рабочем столе"
 msgid "Leave alone (no tiling or moving)"
 msgstr "Не трогать (без тайлинга и перемещения)"
 
+msgid "Close as it opens"
+msgstr "Закрывать при открытии"
+
 msgid "Window Rules"
 msgstr "Правила окон"
 
@@ -61,8 +64,8 @@ msgstr "Нет окон на текущем рабочем столе."
 msgid "+ New rule for this window"
 msgstr "+ Новое правило для этого окна"
 
-msgid "+ New rule"
-msgstr "+ Новое правило"
+msgid "New rule"
+msgstr "Новое правило"
 
 msgid "Conditions"
 msgstr "Условия"
@@ -108,3 +111,47 @@ msgstr "Ничего не делать"
 
 msgid "When last window on workspace closes"
 msgstr "При закрытии последнего окна на рабочем столе"
+
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:97
+msgid "Debug"
+msgstr "Отладка"
+
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:130
+msgid "Performance log"
+msgstr "Журнал производительности"
+
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:131
+msgid "Counts how often the extension acts and how long it takes. Switching it on starts a new report; Copy takes it."
+msgstr "Считает, как часто расширение что-то делает и сколько времени на это уходит. Включение начинает новый отчёт, «Скопировать» берёт его."
+
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:100
+msgid "Copy"
+msgstr "Скопировать"
+
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:124
+msgid "The extension is not running"
+msgstr "Расширение не запущено"
+
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:107
+msgid "The journal could not be read"
+msgstr "Журнал не удалось прочитать"
+
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:111
+msgid "The debug log is empty"
+msgstr "Отладочный лог пуст"
+
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:116
+msgid "Debug log copied"
+msgstr "Отладочный лог скопирован"
+
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:119
+msgid "Writes what the extension does to the journal. Copy takes the last %d minutes of it."
+msgstr "Записывает в журнал, что делает расширение. «Скопировать» берёт последние %d минут."
+
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:128
+msgid "Performance report copied"
+msgstr "Отчёт производительности скопирован"
+
+#: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/window-rules-ui.js:276
+msgid "Edit rule"
+msgstr "Изменить правило"

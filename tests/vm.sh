@@ -20,6 +20,14 @@ usage: $0 setup [image]     make the machine's disk from a bootc image with GNOM
        $0 eval <js|file>    evaluate JavaScript in tester's GNOME Shell and print the result
        $0 state             workspaces and windows, with what the extension made of each
        $0 key <keys>...     send keys to the machine, e.g. esc or super+a
+       $0 open <name> [w h] [--min-width px] [--maximized] [--fullscreen] [--app id]
+                             open a test window as tester
+       $0 launch <command>...  run a program in tester's session, detached
+       $0 drag <x1> <y1> <x2> <y2>  drag with the left button, as a hand on a mouse would
+       $0 point <x> <y>     move the pointer there, no button pressed
+       $0 scenarios [filter] act out the scenarios of tests/scenarios.js in tester's session
+       $0 perf [on|off|reset|json]  the extension's performance report, as text unless json;
+                             on and off switch its performance log, reset starts the report anew
        $0 shot [file]       save a screenshot (default: screen.png in the machine's directory)
        $0 stop              power it off
 EOF
@@ -58,9 +66,12 @@ PY
 running() { [[ -S "$dir/qmp.sock" ]] && qmp query-status >/dev/null 2>&1; }
 need_running() { running || die "the machine is not running; run: $0 start"; }
 
+# One connection shared by every call while it lasts: the scenarios make hundreds of short
+# calls, and a handshake each would cost more than the calls themselves.
 guest_once() {
     ssh -i "$key" -p "$(cat "$dir/port")" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
         -o IdentitiesOnly=yes -o LogLevel=ERROR -o ConnectTimeout=5 -o ServerAliveInterval=30 \
+        -o ControlMaster=auto -o ControlPath="$dir/ssh.ctl" -o ControlPersist=120 \
         root@127.0.0.1 "$@"
 }
 
@@ -355,6 +366,103 @@ print(json.dumps({"keys": [{"type": "qcode", "data": names.get(x, x)} for x in s
 
 cmd_key() { need_running; [[ $# -gt 0 ]] || usage; send_keys "$@"; }
 
+# A test window for the scenarios, as tester; the script goes over with the call that starts it.
+cmd_open() {
+    need_running
+    [[ $# -gt 0 ]] || usage
+    guest_once "$guest_lib"'
+        script=$home/.local/share/bwm-test/test-window.js
+        runuser -u tester -- mkdir -p "$(dirname "$script")"
+        cat >"$script"; chown tester:tester "$script"
+        as_user setsid gjs -m "$script" '"$(printf '%q ' "$@")"' >/dev/null 2>&1 </dev/null &' \
+        <"$repo_root/tests/vm/test-window.js"
+}
+
+# Any program in tester's session, detached: Google Chrome for the chrome scenarios.
+cmd_launch() {
+    need_running
+    [[ $# -gt 0 ]] || usage
+    guest_once "$guest_lib"'
+        as_user setsid '"$(printf '%q ' "$@")"' >/dev/null 2>&1 </dev/null &'
+}
+
+# A real drag on the machine's USB tablet: Mutter sees a grab, as from a hand on a mouse.
+cmd_drag() { # x1 y1 x2 y2 [screen-width screen-height]
+    need_running
+    [[ $# -ge 4 ]] || usage
+    local size="${5:-}x${6:-}"
+    [[ "$size" == x ]] && size="$(shell_eval 'global.stage.width + "x" + global.stage.height')"
+    python3 - "$dir/qmp.sock" "$1" "$2" "$3" "$4" "${size%x*}" "${size#*x}" <<'PY'
+import json, socket, sys, time
+sock, x1, y1, x2, y2, sw, sh = sys.argv[1], *map(float, sys.argv[2:])
+s = socket.socket(socket.AF_UNIX); s.connect(sock); f = s.makefile("rw")
+f.readline()
+def cmd(c, a=None):
+    m = {"execute": c}
+    if a is not None: m["arguments"] = a
+    f.write(json.dumps(m) + "\n"); f.flush()
+    while True:
+        r = json.loads(f.readline())
+        if "return" in r or "error" in r: return r
+cmd("qmp_capabilities")
+def at(x, y):
+    return [{"type": "abs", "data": {"axis": "x", "value": round(x * 32767 / sw)}},
+            {"type": "abs", "data": {"axis": "y", "value": round(y * 32767 / sh)}}]
+def send(events): cmd("input-send-event", {"events": events}); time.sleep(0.04)
+btn = lambda down: {"type": "btn", "data": {"down": down, "button": "left"}}
+send(at(x1, y1)); time.sleep(0.2)
+send([btn(True)]); time.sleep(0.15)
+steps = 24
+for i in range(1, steps + 1):
+    send(at(x1 + (x2 - x1) * i / steps, y1 + (y2 - y1) * i / steps))
+time.sleep(0.35)   # held still before the release, as a hand would
+send([btn(False)])
+PY
+}
+
+# The pointer moved without a button: what focus-follows-mouse reads.
+cmd_point() { # x y [screen-width screen-height]
+    need_running
+    [[ $# -ge 2 ]] || usage
+    local size="${3:-}x${4:-}"
+    [[ "$size" == x ]] && size="$(shell_eval 'global.stage.width + "x" + global.stage.height')"
+    python3 - "$dir/qmp.sock" "$1" "$2" "${size%x*}" "${size#*x}" <<'PY'
+import json, socket, sys
+sock, x, y, sw, sh = sys.argv[1], *map(float, sys.argv[2:])
+s = socket.socket(socket.AF_UNIX); s.connect(sock); f = s.makefile("rw")
+f.readline()
+def cmd(c, a=None):
+    m = {"execute": c}
+    if a is not None: m["arguments"] = a
+    f.write(json.dumps(m) + "\n"); f.flush()
+    while True:
+        r = json.loads(f.readline())
+        if "return" in r or "error" in r: return r
+cmd("qmp_capabilities")
+cmd("input-send-event", {"events": [
+    {"type": "abs", "data": {"axis": "x", "value": round(x * 32767 / sw)}},
+    {"type": "abs", "data": {"axis": "y", "value": round(y * 32767 / sh)}}]})
+PY
+}
+
+cmd_perf() {
+    need_running
+    local call='as_user busctl --user --json=short call org.gnome.Shell /org/borshevik/WorkspaceManager org.borshevik.WorkspaceManager'
+    case "${1:-text}" in
+        on|off) guest_once "$guest_lib"'
+            as_user dconf write /org/gnome/shell/extensions/borshevik-workspace-manager/perf-log '"$([[ $1 == on ]] && echo true || echo false)" ;;
+        reset) guest_once "$guest_lib$call ResetPerf" >/dev/null ;;
+        json) guest_once "$guest_lib$call GetPerfReport" | python3 -c 'import json, sys; print(json.load(sys.stdin)["data"][0])' ;;
+        text) guest_once "$guest_lib$call GetPerfReport" | gjs -m "$repo_root/tests/vm/perf-report.js" ;;
+        *) usage ;;
+    esac
+}
+
+cmd_scenarios() {
+    need_running
+    gjs -m "$repo_root/tests/vm/run.js" "$@"
+}
+
 cmd_shot() {
     need_running
     local out="${1:-$dir/screen.png}"
@@ -388,7 +496,7 @@ cmd_stop() {
     guest_once systemctl poweroff >/dev/null 2>&1 || true
     for _ in $(seq 60); do running || break; sleep 2; done
     running && { qmp quit >/dev/null 2>&1 || true; sleep 2; }
-    rm -f "$dir/qmp.sock" "$dir/spice.sock" "$dir/port"
+    rm -f "$dir/qmp.sock" "$dir/spice.sock" "$dir/port" "$dir/ssh.ctl"
     echo "stopped"
 }
 
@@ -403,6 +511,12 @@ case "$cmd" in
     eval)    cmd_eval "$@" ;;
     state)   cmd_state ;;
     key)     cmd_key "$@" ;;
+    open)    cmd_open "$@" ;;
+    launch)  cmd_launch "$@" ;;
+    drag)    cmd_drag "$@" ;;
+    point)   cmd_point "$@" ;;
+    scenarios) cmd_scenarios "$@" ;;
+    perf)    cmd_perf "$@" ;;
     shot)    cmd_shot "$@" ;;
     stop)    cmd_stop ;;
     *)       usage ;;
