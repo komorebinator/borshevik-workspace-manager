@@ -27,6 +27,44 @@ components:
         description: Whether the log is on.
       - id: name
         description: "A window as the log names it: its class and Mutter's id, `google-chrome#147594777`. By class alone two windows of one app could not be told apart: a Chrome window of the author's sent on past its home could not be told from the two others Chrome had restored, until the log named each (2026-10-18)."
+  - id: perf
+    type: "@Module"
+    src: borshevik-workspace-manager@komorebinator/perf.js
+    description: "The performance report (see the guideline on measuring): how often each signal handler, later and timer of the extension runs and how long it takes, how long each intent spends in dispatch and each of its stages — snapshot, plan, execute — which intents were queued and from where, which plans came out empty, which operations were carried out, the busiest windows by intents and operations, and how much the extension holds now — records, handlers, Android's states, intents waiting. It only counts and times, and judges nothing: no thresholds, no warnings; the numbers are read by the author, by Claude and by the tests (behaviour#quiet). Collected while the perf-log setting is on, from the moment it was switched on or the report last reset; off, a measured point costs one check of a flag. Times are taken with GLib.get_monotonic_time and include whatever a measured point calls, other measured points among them. Imports nothing of GNOME Shell's, so preferences, another process, format the report with it too."
+    functions:
+      - id: setPerf
+        description: Turns collecting on or off; follows the perf-log setting. Switching it on starts a new report; switching it off keeps the last one, closed at that moment, for whoever asks for it over D-Bus — preferences only while it is on.
+      - id: resetPerf
+        description: "Starts the report anew: every count and time dropped, the period starting now."
+      - id: measure
+        description: Runs a function counted and timed under a kind (dispatch, snapshot, plan, execute, handler, later, timer) and a name; an intent queued while it runs is credited to it, the innermost one, as what caused it.
+      - id: handler
+        description: "A signal handler wrapped in measure under 'handler' and the name it is reported by, `<module>: <signal>`. Every handler of the extension's own is connected through it, so the report misses none (see the guideline)."
+      - id: count
+        description: "Counts something with no time of its own: an empty plan, an intent queued while the executor ran."
+      - id: noteDispatch
+        description: An intent queued, by its type and windows; credited to the measured point running, or counted as from outside any — a keybinding not wrapped, say.
+      - id: noteOp
+        description: An operation of a plan, by its kind and window, counted as it goes to the executor.
+      - id: watchSize
+        description: Names something the extension holds and how to read its size; read when a report is asked for, so a leak shows as growth once windows and workspaces are gone (behaviour#quiet#nothing-left-behind).
+      - id: perfReport
+        description: "The report as an object, what GetPerfReport sends as JSON: the period it covers, in local time and seconds, so rates can be worked out, and every count, time and size."
+      - id: formatReport
+        description: "The report as text, for preferences' Copy and tests/vm.sh perf: one table per kind of measured point — calls, calls per minute, total and longest time, intents caused — then the intents, empty plans, operations, busiest windows and sizes."
+  - id: workspaces
+    type: "@Module"
+    src: borshevik-workspace-manager@komorebinator/workspaces.js
+    description: "Telling the workspaces GNOME still has from those it has removed. A removed workspace lives on as an object for as long as something holds it — a home, an Android window's origin, a handler — and index() on it returns -1 but fails Mutter's assertion, a critical in the journal each time (`meta_workspace_index: assertion 'ret >= 0' failed`, seen in the test machine, 2026-10-20); every check of whether a workspace is still there goes through isLive instead."
+    functions:
+      - id: liveWorkspaces
+        description: The workspaces GNOME has now, as a set.
+      - id: isLive
+        description: Whether a workspace is still one of them.
+      - id: wsIndex
+        description: "A workspace's index, or -1 once removed — for the log above all, whose arguments are worked out even while it is off."
+      - id: dropRemovedWorkspaces
+        description: "A list of [workspace, handler id] with the handlers of removed workspaces disconnected and dropped, for windows and indicator at every workspace-removed: kept, they piled up for as long as the extension was on."
   - id: registry
     type: "@Singleton"
     src: borshevik-workspace-manager@komorebinator/registry.js
@@ -185,6 +223,12 @@ components:
       - id: this._restackLater
         type: later id or 0
         description: "The recheck queued for the next idle after restacked (_onRestacked): Mutter emits restacked in bursts, and one recheck answers the whole burst. An 80 ms debounce stood here before, a timer with nothing to wait for."
+      - id: this._wsHandles
+        type: Array<[Meta.Workspace, handler id]>
+        description: "The window-removed handler on every workspace (_onWindowRemoved), connected for each one as GNOME adds it. Those of a workspace GNOME removes are dropped at its workspace-removed (workspaces#dropRemovedWorkspaces): kept until disable, one piled up for every workspace a maximized window had held (found by behaviour#quiet#nothing-left-behind, 2026-10-20)."
+      - id: this._areas
+        type: Map<Meta.Workspace, string>
+        description: "The primary monitor's work area each workspace was last laid out for, as `x,y wxh` (_readAreas). A Map pruned at every workspace-removed rather than a WeakMap: a GJS wrapper may be made anew for the same workspace, and a WeakMap would then lose the entry and miss a real change; its size is in the performance report."
     functions:
       - id: isRelevant
         description: "Whether the extension manages a window at all: normal windows only, not hidden from the taskbar and not on all workspaces. Dialogs, docks and sticky windows are left alone everywhere — placement, the indicator and rules-ui. Secondary monitors are the exception to the last clause: their windows are on all workspaces when GNOME keeps workspaces on the primary monitor only, and must still get the tiling that replaces GNOME's (drag, behaviour#secondary-monitors)."
@@ -215,7 +259,9 @@ components:
       - id: _onRestacked
         description: "After the stacking changed, once for a whole burst of restacked at the next idle (this._restackLater), dispatches recheck for the active workspace: a click that puts a tile above a guest can cover it, and that is a change of the user's, not one any plan made."
       - id: _onWorkAreasChanged
-        description: After the work area changed — resolution, scale, a monitor, the panel — dispatches recheck with relayout for every workspace, so tiles are laid out on the new area and guests it covers are found. Roles are not judged again (behaviour#role-by-size#not-judged-again).
+        description: "After the work area changed — resolution, scale, a monitor, the panel — dispatches recheck with relayout for each workspace whose primary work area is no longer the one remembered (_readAreas), so tiles are laid out on the new area and guests it covers are found. Roles are not judged again (behaviour#role-by-size#not-judged-again). Mutter sends workareas-changed whenever it recomputes the work areas, and it does so for every workspace added or removed, the areas themselves unchanged (seen in the test machine, 2026-10-20): until then every one of them rechecked every workspace for nothing, 69 empty rechecks for 13 workspaces come and gone in two minutes of the author's session (found with perf). The state is what is judged, not the signal (behaviour#quiet#work-area-unchanged)."
+      - id: _readAreas
+        description: "Reads every workspace's work area on the primary monitor into this._areas and returns the workspaces whose area is not the one remembered. A workspace seen for the first time is remembered and not returned: it holds nothing to lay out yet. Read once at enable."
       - id: adoptExisting
         description: "At enable, takes every relevant window already open that no rule closes or leaves alone under management where it is, without moving it, with the role it is seen to have (behaviour#read-back-at-enable): maximized and fullscreen ones as full, to go back to floating since their real prior role is unknown; those _tilesBySight finds as tiles on that side, their tileRect what they cover now; the rest as floating at their present geometry. One a rule closes is closed, as it would have been had the extension been on when it opened. Needed because after a shell restart some windows — Chrome web apps among them — come back without the signals new windows send, and would otherwise stay untracked, so a new window opening beside them would take their workspace for empty, and because turning the extension off and on again in a running session would otherwise leave the wall without its tiles. Android windows go to android#adoptExisting."
       - id: _tilesBySight
@@ -346,34 +392,67 @@ components:
   - id: indicator
     type: "@View"
     src: borshevik-workspace-manager@komorebinator/indicator.js
-    description: "The panel indicator that replaces the Activities button: the wall at a glance, one button per workspace with its windows' icons (behaviour#indicator). It shows and switches; it places nothing. Reordering the workspaces by dragging a button is workspace-drag's."
+    description: "The panel indicator that replaces the Activities button: the wall at a glance, one button per workspace with its windows' icons (behaviour#indicator). It shows and switches; it places nothing. Built as model and view: what it shows is read into plain data (indicator-model#readWall), what changed from the model shown is worked out (indicator-model#diff), and only that is applied to the buttons (indicator-view), which stay from one change to the next — a switch of workspace changes two buttons' state and builds nothing. Until 2026-10-20 every change destroyed the whole indicator and built it anew, icons and effects with it: 6 ms of the main thread at every switch of workspace in the test machine, some 70% of all the extension did for one, against half a millisecond since (measured with perf). Each kind of change has its method in the view, so an animation of one — a workspace's button appearing, going, moving — belongs to that method alone and touches nothing else. Reordering the workspaces by dragging a button is workspace-drag's."
     fields:
-      - id: this._buttons
-        type: "Array<{actor: St.Button, bg: St.Bin, ws: Meta.Workspace, plus: boolean}>"
-        description: "The workspace buttons as last built, in the order shown, for workspace-drag: each with its background, which a drag clones, the workspace it stands for, and whether it is the '+' of the last, empty one."
+      - id: this._model
+        type: Array<indicator-model#Entry>
+        description: The model the buttons show now, the one the next reading is compared with (indicator-model#diff).
+      - id: this._view
+        type: indicator-view or null
+        description: The buttons, and the logo before them; null once the panel is gone with the session ending (see _schedule).
       - id: this._drag
         type: workspace-drag or null
-        description: "The drag under way, if any. While it is set no rebuild happens: _update would destroy the very buttons it moves."
+        description: "The drag under way, if any. While it is set the buttons are left as they are: the drag has measured them where they stood, and a button added or moved under it would land the drop elsewhere."
       - id: this._stale
         type: boolean
-        description: A rebuild was asked for during a drag, to be done as it ends.
+        description: An update was asked for during a drag, to be done as it ends.
       - id: this._wsHandles
         type: Array<[Meta.Workspace, handler id]>
-        description: The window-added and window-removed handlers on every workspace, so a window moving between workspaces rebuilds the indicator even when nothing else changes.
+        description: "The window-added and window-removed handlers on every workspace, so a window moving between workspaces updates the indicator even when nothing else changes. Those of a workspace GNOME removes are dropped at its workspace-removed (workspaces#dropRemovedWorkspaces): kept until disable they piled up, two for every workspace a maximized window had held (found by behaviour#quiet#nothing-left-behind, 2026-10-20)."
     functions:
       - id: enable
         description: "Hides the Activities button, puts the indicator first in the panel's left box, and follows what changes the wall as it is shown: workspaces added, removed, reordered or switched, windows arriving on and leaving each workspace (this._wsHandles, connected for each workspace as it is added), windows appearing or going (Shell.WindowTracker's tracked-windows-changed), the overview, for the logo's highlight, and the session mode, for the lock screen."
       - id: refresh
         description: "Called by dispatch after a plan has run: a window changing role — tiled, made full, floated — reorders its workspace's icons, and Mutter sends nothing the indicator follows for it."
       - id: _schedule
-        description: Batches rebuilds to the next idle. During a drag it only marks the indicator stale (this._stale), and the drag's end rebuilds it.
+        description: "Batches updates to the next idle, one per burst of signals. During a drag it only marks the indicator stale (this._stale), and the drag's end updates it. Nothing is scheduled once the panel is gone: when the session ends GNOME destroys the panel before it disables the extension, and an update still pending then built into the destroyed box (`St.BoxLayout ... has been already disposed`, once in six session ends in the test machine, 2026-10-19); the box's destroy drops the view and the pending update."
       - id: _update
-        description: Rebuilds the indicator. First a logo button that toggles the overview and is highlighted while the overview is open; then one button per workspace, numbered, with the icons of its windows — full ones first, then left, right, floating; greyed out on inactive workspaces. Empty workspaces are left out, except the active one and the last, which shows a '+' instead of icons. Clicking a button switches to it; pressing one hands the press to workspace-drag, which tells a drag from a click (this._buttons).
+        description: "Reads the wall again (indicator-model#readWall), works out what changed from the model shown (indicator-model#diff), and has the view apply just that (indicator-view#apply); a reading that changed nothing touches no actor."
+      - id: _onPress
+        description: "A press on a workspace's button, from the view: with the first button and no drag under way it hands the press to a new workspace-drag, with the buttons as the view shows them; the click stays the button's until the press becomes a drag. A click switches to the button's workspace, and the logo toggles the overview, both the view's callbacks from here."
       - id: _onSessionModeUpdated
         description: "Hides the indicator while the screen is locked and shows it again on unlock, cancelling a drag under way. The extension stays enabled on the lock screen (metadata's session-modes), and the panel stays visible there: without this the icons of every open app, workspace by workspace, would be on show to anyone at the locked machine."
       - id: _dragEnded
-        description: "workspace-drag's callback at its end: forgets the drag and rebuilds if the indicator went stale meanwhile or the drag really started — the pressed button had its release taken by the drag (workspace-drag#_end), and whatever the drag moved goes back with a rebuild."
+        description: "workspace-drag's callback at its end: forgets the drag and updates if the indicator went stale meanwhile or the drag really started — the pressed button had its release taken by the drag (workspace-drag#_end), and a reorder the drag made comes as a signal the update applies as a move."
     components:
+      - id: indicator-model
+        type: "@Module"
+        src: borshevik-workspace-manager@komorebinator/indicator-model.js
+        description: "What the indicator shows, apart from how it is shown: plain data, and the changes from one reading of it to the next. It touches no actor, so the view is free to animate each change, and diff is tested on plain objects (tests#indicator-model)."
+        fields:
+          - id: Entry
+            type: "{ws: Meta.Workspace, num: number, active: boolean, plus: boolean, icons: Array<{id: string, app: Shell.App}>}"
+            description: "One button: the workspace, which also tells entries apart from one reading to the next — never its number, which a reorder changes; its number as shown; whether it is the active one; whether it is the '+' of the empty last workspace; and the icons of its windows in the order shown, each with an id of the window's own, so two windows of one app are two icons."
+        functions:
+          - id: readWall
+            description: "The wall as the indicator shows it, one entry per button in order: the windows of each workspace that the extension counts (windows#isRelevant), not on every workspace and not skipping the pager, full ones first, then left, right and floating, by their record's role; empty workspaces left out but the active one and the last, which is the '+'. The one place it reads Mutter."
+          - id: diff
+            description: "What changed from one model to the next, in the order the view applies it: buttons removed, buttons added (with their index), buttons moved — as few as can be: those outside the longest run of buttons that kept their order among themselves, so a workspace dragged to the end moves alone rather than everything it passed — then each kept button's number, active state and icons (the '+' among them). Two equal models make no change."
+      - id: indicator-view
+        type: "@View"
+        src: borshevik-workspace-manager@komorebinator/indicator-view.js
+        description: "The indicator's actors, kept from one change to the next: the logo, built once, and one button per workspace, made when its workspace comes into the model and destroyed when it leaves; everything else is changed on the button that is there. Each kind of change is a method of its own — _add, _remove, _setNum, _setActive, _setIcons, and the order set in apply — which is where an animation of that change goes. Decides nothing: what to show is indicator-model's, what a click or a press does the indicator's. Counts in the performance report the buttons and icons it builds (perf#count), by which behaviour#indicator#switch-changes-state-only sees a switch build none."
+        functions:
+          - id: apply
+            description: "Applies indicator-model#diff's changes one by one, then puts the buttons in the model's order after the logo, moving only those not already in their place."
+          - id: buttons
+            description: "The buttons in the order shown, for workspace-drag: each with its actor, its background, which a drag clones, its workspace, and whether it is the '+'."
+          - id: _setActive
+            description: "The active workspace's button opaque, with the active background, its icons in colour; any other at 80% and greyed. The grey is one Clutter.DesaturateEffect on the button's row, switched on and off, not one made anew for each icon of each button at every change: each effect draws its actor through a buffer of its own at every paint of the panel."
+          - id: _setIcons
+            description: "Puts the entry's icons in the row, or the '+': an app's icon is taken over from the button's own before one is made (create_icon_texture), so a window come or gone makes one icon, not the row's; the icons left over are destroyed."
+          - id: setOverview
+            description: The logo's highlight while the overview is open.
       - id: workspace-drag
         type: "@Module"
         src: borshevik-workspace-manager@komorebinator/workspace-drag.js
@@ -398,7 +477,7 @@ components:
           - id: _drop
             description: "Puts the dragged workspace where the gap is, with Mutter's reorder_workspace: before the workspace whose button follows the gap, or after the one before it when the gap is last — by the workspaces themselves, since the indicator leaves empty ones out and its buttons are not numbered like the workspaces. Nothing happens when the gap is where the button was. The '+' dropped this way switches to the empty workspace it put there. A workspace GNOME removed during the drag is not reordered."
           - id: _end
-            description: "Ends the press either way, once, logging why: stops listening, lets the pointer go and destroys the actor that held it, lets the pressed button go without a click (fake_release) if a drag took its release, destroys the clone, puts the buttons back without easing, since a rebuild follows, and calls back the indicator with whether a drag happened."
+            description: "Ends the press either way, once, logging why: stops listening, lets the pointer go and destroys the actor that held it, lets the pressed button go without a click (fake_release) if a drag took its release, destroys the clone, puts the buttons back without easing, since the indicator's update follows and moves a reordered one into its place, and calls back the indicator with whether a drag happened."
           - id: cancel
             description: Ends the drag without dropping anything, for the indicator when it is disabled or the screen locks mid-drag (_end).
   - id: rules-ui
@@ -413,12 +492,19 @@ components:
   - id: preferences
     type: "@View"
     src: borshevik-workspace-manager@komorebinator/prefs.js
-    description: "The page the GNOME Extensions app shows for this extension: whether landing on the last, empty workspace opens the overview; what happens when the last window on a workspace closes (go back, open the overview, or nothing); and debug logging."
+    description: "The page the GNOME Extensions app shows for this extension: whether landing on the last, empty workspace opens the overview; what happens when the last window on a workspace closes (go back, open the overview, or nothing); and, in a Debug group of their own below, what is there to find out what the extension does: two rows, each a switch with a Copy of its own, so it is plain which log is copied, and usable only while its switch is on. Debug logging's Copy takes the last DEBUG_LOG_MINUTES of the debug log from the journal (readDebugLog). The performance log's (perf-log) takes the performance report as text (perf#formatReport) through the extension's D-Bus object, since preferences run in a process of their own; switching it on starts a new report, so there is no Reset here (the D-Bus object's ResetPerf is the tests'). A toast says what was copied, or why nothing was: the journal unreadable, the debug log empty, the extension not running to answer."
+    functions:
+      - id: readDebugLog
+        description: "The extension's own entries of the journal for the last DEBUG_LOG_MINUTES, read with `journalctl --user` — the user's own journal, which needs no group — since the shell has nothing of its log. An entry is taken whole, its indented lines with it: one of the debug log (`[BWM]`), an error whose stack trace names one of the extension's files, or one GNOME reports of the extension with an error in it, loading it say. GNOME's notes that name the extension in passing are left out (`... already installed ... will not be loaded`), and so are other extensions' errors (checked in the test machine, 2026-10-20)."
+    fields:
+      - id: DEBUG_LOG_MINUTES
+        default: 10
+        description: "How much of the debug log Copy takes: a bug just seen, small enough to go into a bug report (the author, 2026-10-20) — with debug logging on, the author's session wrote some 110 000 lines of it in a day. The row's subtitle names the minutes."
   - id: gschema
     type: "@ConfigFile"
     format: GSettings schema (XML)
     src: borshevik-workspace-manager@komorebinator/schemas/org.gnome.shell.extensions.borshevik-workspace-manager.gschema.xml
-    description: "The extension's settings: the three the preferences page edits; the three keybindings (Super+Left, Super+Right, Super+R); the remembered float sizes per window class; and the window rules, which ship with three examples — Steam on a workspace of its own, picture-in-picture windows on top on every workspace in a corner, and the Collector app on top on every workspace — and two rules for windows Android makes of its own, not an app's. One leaves Android's on-screen keyboard alone (class `waydroid.InputMethod`): Waydroid gives it a window the size of Android's display like an app's, transparent but for the keyboard, whose layers at times cover all of it, so android#_fillsWindow took it for a full-screen app and moved it to a workspace of its own, taking the user there (2026-10-06). The other closes the launcher's Google Discover feed as it opens (class `^waydroid[.]GoogleDiscoverWindow`, behaviour#android-windows#discover-feed-closed): a window nobody can use, which held a workspace until closed by hand (2026-10-18). Each names that one window and no other of Android's own, so nothing useful is caught by a rule written for something else. Android's other windows need no rule: what the extension does to a window breaks them — Waydroid recreates a window whenever Android changes it, so each recreation reads as a new window to place; a maximized Android window covers the others inside Android's single display, where Android pauses them and Waydroid then closes their windows; and resizing any of them changes Android's display mode, on which Android's compositor has crashed — so the extension handles them itself (android#watch). Until 2026-10-05 a default rule left all of them alone, but that left a full-screen Android app on the current workspace among the user's own windows, so the rule was dropped for the extension's own handling, which can tell full screen from floating. A default rule reaches only those who have never saved rules of their own, since saving writes the whole list: adding the default rules a saved list lacks is left to the settings migration Borshevik is to have for every default it changes (komorebinator/borshevik#70)."
+    description: "The extension's settings: the four the preferences page edits — perf-log, off by default, among them; the three keybindings (Super+Left, Super+Right, Super+R); the remembered float sizes per window class; and the window rules, which ship with three examples — Steam on a workspace of its own, picture-in-picture windows on top on every workspace in a corner, and the Collector app on top on every workspace — and two rules for windows Android makes of its own, not an app's. One leaves Android's on-screen keyboard alone (class `waydroid.InputMethod`): Waydroid gives it a window the size of Android's display like an app's, transparent but for the keyboard, whose layers at times cover all of it, so android#_fillsWindow took it for a full-screen app and moved it to a workspace of its own, taking the user there (2026-10-06). The other closes the launcher's Google Discover feed as it opens (class `^waydroid[.]GoogleDiscoverWindow`, behaviour#android-windows#discover-feed-closed): a window nobody can use, which held a workspace until closed by hand (2026-10-18). Each names that one window and no other of Android's own, so nothing useful is caught by a rule written for something else. Android's other windows need no rule: what the extension does to a window breaks them — Waydroid recreates a window whenever Android changes it, so each recreation reads as a new window to place; a maximized Android window covers the others inside Android's single display, where Android pauses them and Waydroid then closes their windows; and resizing any of them changes Android's display mode, on which Android's compositor has crashed — so the extension handles them itself (android#watch). Until 2026-10-05 a default rule left all of them alone, but that left a full-screen Android app on the current workspace among the user's own windows, so the rule was dropped for the extension's own handling, which can tell full screen from floating. A default rule reaches only those who have never saved rules of their own, since saving writes the whole list: adding the default rules a saved list lacks is left to the settings migration Borshevik is to have for every default it changes (komorebinator/borshevik#70)."
   - id: metadata
     type: "@ConfigFile"
     src: borshevik-workspace-manager@komorebinator/metadata.json
@@ -489,6 +575,12 @@ tests:
       - behaviour#user-moves
       - behaviour#drag-and-snap
       - behaviour#window-rules
+  - id: indicator-model
+    description: "indicator-model#diff on plain objects, no shell needed: the changes the indicator's view is told to apply between two models — none for an equal one; two buttons' state for a switch; one button's icons for a window opened; the '+' turned into a workspace and a new '+' added; a workspace gone, with the ones after it renumbered; a workspace dragged to either end moving alone."
+    command: gjs -m tests/indicator/run.js
+    expect: prints ok for every case, ends with `<n> ok, 0 failed`, and exits 0
+    verifies:
+      - behaviour#indicator#switch-changes-state-only
   - id: vm-scenarios
     description: "The same scenarios as planner-scenarios, from the same file, acted out against a real GNOME Shell in the test machine with real windows, keys and drags (@BorshevikWorkspaceManagerWorkflow#test-vm#scenarios). Where planner-scenarios checks the decisions, this checks that they happen: executor, the adapters, Mutter's own asynchrony. Run in try_in_vm, before the author's own try. Its `verifies` is every scenario tests/scenarios.js does not skip for the test machine, the Chrome and Android groups included, a behaviour named whole when none of its scenarios is left out; what neither level runs — a second monitor, a dialog, and the scenarios not yet kept — is left to tried-by-the-author."
     command: tests/vm.sh scenarios
@@ -551,6 +643,7 @@ guidelines:
   - "Never move a window to another workspace, or activate a workspace, inside a handler Mutter calls while it paints a frame — a window actor's `first-frame`, a `BEFORE_REDRAW` later — but at the next idle. Mutter asserts that no frame is in progress when the top window actor changes, and on failing the assertion aborts GNOME Shell: moving an Android window from its first-frame handler took the author's session down on 2026-10-06 (`invalidate_top_window_actor_for_views: assertion failed: (!priv->frame_in_progress)`). dispatch therefore plans and executes only at idle, whatever queued the intent; registering a window from first-frame is safe, since it only records it and queues its opened intent, which dispatch plans at the next idle."
   - An exception thrown inside an idle callback or a signal handler is lost together with whatever it interrupted. dispatch and executor#run catch it, LOG it and carry on with the next operation and the next intent, so that one failure cannot strand a half-moved window and every intent queued behind it; the old code wrapped its slot return in a try for the same reason.
   - "Every signal handler, every intent dispatched, every plan and every operation executed calls LOG near its entry and at each key transition, with a prefix naming the module and action and the context that matters (the window as log#name names it, its role, workspace index, the intent or op) — e.g. LOG('executor: move', name(win), '→ ws', ws.index()). The debug log is how a misbehaviour seen on someone's machine is reconstructed afterwards, and it is only worth anything if it is everywhere; this is not spelled out on each @Function, and a rebuild keeps it across every module, not only where a description happens to mention it."
+  - "The extension runs all the time, in GNOME Shell's main thread, where whatever it does is paid for on every frame; what it costs is measured, not guessed (perf). Every signal handler of its own is connected through perf#handler and every later and timer runs inside perf#measure, named `<module>: <signal or what it does>`, and whatever the extension holds per window or per workspace is named to perf#watchSize — so the report misses nothing, and a handler or a list added without it is a gap in it. The report only collects; what is too often or too slow is judged by reading it and by the tests of behaviour#quiet, never by thresholds in the extension. It is read the same way in the test machine (tests/vm.sh perf) and in the author's live session (the D-Bus call in extension, or Copy in preferences)."
   - The extension's state lives in the registry — a map from Meta.Window to its record, owned by the extension and cleared on disable — and in the maps of the modules that need their own (android); nothing is attached to Meta.Window objects. The extension stays enabled while the screen is locked (metadata's session-modes), so its state needs to last only as long as it is on; until session-modes was set it was disabled on every lock, which is why the old code kept its state on the windows themselves. Windows already open when it is enabled are taken under management where they are (windows#adoptExisting).
   - No timer, delay or deadline is added to the extension without the author's explicit agreement, asked for that timer on its own. A timer stands in for something the extension does not know — that a window is ready, has taken its size, will be replaced — and guesses it from time; every bug found at the edges with apps and Mutter was one such guess failing, and every fix that added a condition to a timer made the next one harder to find (2026-10-19, when all but Android's (android#ANDROID_REPLACE_MS) were replaced by what Mutter can say — a window's first frame or first size, the minimum width its app declares, its next size-changed, the pointer's every move during a drag (drag#_follow), once polled every 33 ms — and windows opening together, once gathered for 150 ms, came to be placed each on its own). First look for the event or the state that says it; propose a timer only when there is none, saying what it guesses and why nothing else can tell. Deferring to the next idle (LaterType.IDLE), an animation's duration and polling a value with no signal are not guesses of this kind, but the last still needs the same agreement.
 recipes:
@@ -1036,6 +1129,10 @@ behaviour:
         given: Workspace S holds windows A and X, workspace T holds window B, and the view is on S
         when: A is moved to T without the view following it, as the extension moves a guest off or another app moves a window
         then: At once T's button shows two icons and S's one
+      - id: switch-changes-state-only
+        given: Three workspaces holding A, then B and C, then D, the view on the first
+        when: The user switches to the second
+        then: "The second button is the active one and the buttons show one, two and one icons, and no button or icon was built for it: the switch changed the state of the two buttons concerned"
       - id: drag-between
         given: Four workspaces, holding A, B, C and D in that order, the view on the first
         when: The user drags the first workspace's button and drops it between the third and the fourth
@@ -1067,18 +1164,49 @@ behaviour:
         given: Workspace S has tile A on the left, the right free, and the extension is turned off and on again
         when: The user presses Super+Left on A
         then: A floats again, as a tile does when tiled to its own side (behaviour#two-slots#untile-same-side)
+  - id: quiet
+    description: "The extension costs nothing while nothing calls for it. It runs all the time, in the shell's main thread, so when the user does nothing, or does what is no business of the extension's — moving or resizing a floating window by hand, an app drawing all the time — it does nothing either; once what it did has settled it stays still, rather than answering its own work or an app's answer to it; and what it holds for windows and workspaces goes when they go. Judged by the performance report (perf), in the test machine."
+    scenarios:
+      - id: idle
+        given: Workspaces with a pair of tiles, a full window and two floating windows, one of them an app drawing at every frame, as a video does
+        when: The user does nothing for five seconds
+        then: "Nothing of the extension's runs: no handler, later, timer or plan"
+      - id: floating-dragged
+        given: Two floating windows W and X on a workspace
+        when: The user drags W by its title bar to another place on the same workspace
+        then: W is where it was dropped and the extension carried out no operation
+      - id: floating-resized
+        given: Two floating windows W and X on a workspace, apart
+        when: The user drags W's bottom right corner to make it bigger
+        then: W is bigger and the extension carried out no operation
+      - id: work-area-unchanged
+        given: A pair of tiles on one workspace and a full window on the next
+        when: A workspace is added at the end and removed again, as GNOME's dynamic workspaces do, and Mutter says the work areas changed for each
+        then: "Nothing is rechecked or moved: the work area is the one it was"
+      - id: still-after-settling
+        given: Any of the other scenarios
+        when: Its action is done and the windows have settled
+        then: "For the next second the extension carries out no operation: a loop with an app, such as two apps resizing each other through it (behaviour#two-slots#resize-slow-pair), shows here even when the windows look still"
+      - id: nothing-left-behind
+        given: A floating window X
+        when: Ten windows are opened and closed one after another, every other one maximized on a workspace of its own
+        then: Everything the extension holds — records, handlers, states, for windows and for workspaces — is back to what it was before
 functions:
   - id: enable
-    description: Builds the modules and wires them together, turns off Mutter's edge tiling and its Super+Left/Right bindings after saving them (this._savedEdgeTiling, this._savedTileLeft/Right), registers the extension's keybindings, and takes the windows already open under management (windows#adoptExisting). Called at login and when the user turns the extension on — no longer at every unlock, since metadata's session-modes keeps it enabled on the lock screen.
+    description: "Builds the modules and wires them together, turns off Mutter's edge tiling and its Super+Left/Right bindings after saving them (this._savedEdgeTiling, this._savedTileLeft/Right), registers the extension's keybindings, and takes the windows already open under management (windows#adoptExisting). It follows the perf-log setting (perf#setPerf), names what the extension holds to the report (_watchSizes), and exports the extension's D-Bus object on GNOME Shell's own connection, at /org/borshevik/WorkspaceManager with the interface org.borshevik.WorkspaceManager: GetPerfReport, the report as JSON (perf#perfReport), and ResetPerf. Preferences use it, and so does anyone reading the report, with no unsafe mode — in a live session `busctl --user --json=short call org.gnome.Shell /org/borshevik/WorkspaceManager org.borshevik.WorkspaceManager GetPerfReport | gjs -m tests/vm/perf-report.js` prints it as text. disable unexports it and stops collecting. Called at login and when the user turns the extension on — no longer at every unlock, since metadata's session-modes keeps it enabled on the lock screen."
   - id: disable
     description: "Undoes enable exactly: disconnects every signal, removes every timer and later still pending (a plan queued in executor is dropped, not finished), destroys the indicator, the preview and the rules overlay, clears the registry, and restores Mutter's edge tiling and Super+Left/Right bindings to what they were before enable. Windows are left where they are."
   - id: dispatch
-    description: "The one way anything gets placed (see the guidelines). Queues an intent and, at the next idle, handles the queue in order, one intent at a time: takes a snapshot (snapshot#take), asks planner#plan for a plan, and waits for executor#run to finish it before planning the next. Intents arriving meanwhile wait their turn; nothing is planned during a frame. After a plan that did anything, the indicator is refreshed (indicator#refresh), and a recheck of the workspaces it touched is queued, so guests covered by what the plan did are found once its windows have settled (behaviour#covered-guests); a recheck that finds nothing plans nothing, which is what ends the chain. With debug logging on, every plan but an empty recheck is logged in full (logPlan)."
+    description: "The one way anything gets placed (see the guidelines). Queues an intent and, at the next idle, handles the queue in order, one intent at a time: takes a snapshot (snapshot#take), asks planner#plan for a plan, and waits for executor#run to finish it before planning the next. Intents arriving meanwhile wait their turn; nothing is planned during a frame. After a plan that did anything, the indicator is refreshed (indicator#refresh), and a recheck of the workspaces it touched is queued, so guests covered by what the plan did are found once its windows have settled (behaviour#covered-guests); a recheck that finds nothing plans nothing, which is what ends the chain. With debug logging on, every plan but an empty recheck is logged in full (logPlan). The report (perf) gets every intent queued, credited to the handler it was queued from — one queued while the executor runs is the extension reacting to its own work, and is counted apart — and, per intent type, the time of the whole and of each stage, the plans that came out empty and every operation sent to the executor; _dispatchOne is one intent's way through it."
     arguments:
       - id: intent
         description: what happened, as planner#Intent describes
+  - id: _dispatchOne
+    description: "One intent taken from the queue at idle: snapshot, plan, execute, each measured under the intent's type (perf#measure), then the refresh and the rechecks dispatch describes, and on to the next."
   - id: logPlan
     description: "Logs one plan in full: the wall it was made from — every window with its workspace, role, rect, place in the stacking, home and float geometry — the intent's details, every operation with its windows, workspaces and rects, the workspace shown and the window focused, and, for every guest moved off as covered, its rect and z and those of each window that counted as covering it (planner#Plan's notes). The short line dispatch logs for each plan names the operations only; a misplacement seen on the author's machine on 2026-10-18 could not be explained from it, which is why the whole plan is written out."
+  - id: _watchSizes
+    description: "Names to the report (perf#watchSize) what the extension holds: the workspaces and windows in the session, for scale; the registry's managed and ignored windows; the intents waiting; the windows windows follows and their remembered states; the workspace handlers windows and indicator hold, and the work areas windows remembers; the windows executor waits on for a size; Android's watched windows, their actor handlers and its closed windows awaiting a replacement; the indicator's buttons."
   - id: _isRelevant
     description: "What rules-ui needs of the extension: _isRelevant, _applyRuleToAll, _appliedRules and _defer hand it windows#isRelevant, rules#applyToAll, rules#appliedTo and an idle later, so the overlay keeps working against the modules without knowing them."
   - id: _applyRuleToAll

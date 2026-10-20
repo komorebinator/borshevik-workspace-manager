@@ -26,6 +26,8 @@ usage: $0 setup [image]     make the machine's disk from a bootc image with GNOM
        $0 drag <x1> <y1> <x2> <y2>  drag with the left button, as a hand on a mouse would
        $0 point <x> <y>     move the pointer there, no button pressed
        $0 scenarios [filter] act out the scenarios of tests/scenarios.js in tester's session
+       $0 perf [on|off|reset|json]  the extension's performance report, as text unless json;
+                             on and off switch its performance log, reset starts the report anew
        $0 shot [file]       save a screenshot (default: screen.png in the machine's directory)
        $0 stop              power it off
 EOF
@@ -443,6 +445,19 @@ cmd("input-send-event", {"events": [
 PY
 }
 
+cmd_perf() {
+    need_running
+    local call='as_user busctl --user --json=short call org.gnome.Shell /org/borshevik/WorkspaceManager org.borshevik.WorkspaceManager'
+    case "${1:-text}" in
+        on|off) guest_once "$guest_lib"'
+            as_user dconf write /org/gnome/shell/extensions/borshevik-workspace-manager/perf-log '"$([[ $1 == on ]] && echo true || echo false)" ;;
+        reset) guest_once "$guest_lib$call ResetPerf" >/dev/null ;;
+        json) guest_once "$guest_lib$call GetPerfReport" | python3 -c 'import json, sys; print(json.load(sys.stdin)["data"][0])' ;;
+        text) guest_once "$guest_lib$call GetPerfReport" | gjs -m "$repo_root/tests/vm/perf-report.js" ;;
+        *) usage ;;
+    esac
+}
+
 cmd_scenarios() {
     need_running
     gjs -m "$repo_root/tests/vm/run.js" "$@"
@@ -501,6 +516,7 @@ case "$cmd" in
     drag)    cmd_drag "$@" ;;
     point)   cmd_point "$@" ;;
     scenarios) cmd_scenarios "$@" ;;
+    perf)    cmd_perf "$@" ;;
     shot)    cmd_shot "$@" ;;
     stop)    cmd_stop ;;
     *)       usage ;;

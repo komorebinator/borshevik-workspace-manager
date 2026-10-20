@@ -10,6 +10,8 @@
 import Meta from 'gi://Meta';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { LOG, name } from './log.js';
+import { handler, measure } from './perf.js';
+import { dropRemovedWorkspaces, isLive, liveWorkspaces } from './workspaces.js';
 
 const TILE_SIGHT_PX = 10;
 
@@ -27,6 +29,7 @@ export class WindowTracker {
         this._restackLater = 0;
         this._connected = new Map();
         this._seen = new Map();          // the full/minimized state last acted on, per window
+        this._areas = new Map();         // the work area last laid out for, per workspace
         this._handles = [];
         this._wsHandles = [];
     }
@@ -34,13 +37,21 @@ export class WindowTracker {
     enable() {
         const d = global.display, wm = global.workspace_manager;
         this._handles = [
-            [d, d.connect('window-created', (_d, win) => this._onWindowCreated(win))],
-            [d, d.connect('restacked', () => this._onRestacked())],
-            [d, d.connect('workareas-changed', () => this._onWorkAreasChanged())],
-            [wm, wm.connect('active-workspace-changed', () => this._onActiveWorkspaceChanged())],
-            [wm, wm.connect('workspace-added', (_m, i) => this._watchWorkspace(wm.get_workspace_by_index(i)))],
+            [d, d.connect('window-created', handler('windows: window-created', (_d, win) => this._onWindowCreated(win)))],
+            [d, d.connect('restacked', handler('windows: restacked', () => this._onRestacked()))],
+            [d, d.connect('workareas-changed', handler('windows: workareas-changed', () => this._onWorkAreasChanged()))],
+            [wm, wm.connect('active-workspace-changed',
+                handler('windows: active-workspace-changed', () => this._onActiveWorkspaceChanged()))],
+            [wm, wm.connect('workspace-added',
+                handler('windows: workspace-added', (_m, i) => this._watchWorkspace(wm.get_workspace_by_index(i))))],
+            [wm, wm.connect('workspace-removed', handler('windows: workspace-removed', () => {
+                this._wsHandles = dropRemovedWorkspaces(this._wsHandles);
+                const live = liveWorkspaces();
+                for (const ws of this._areas.keys()) if (!live.has(ws)) this._areas.delete(ws);
+            }))],
         ];
         for (let i = 0; i < wm.get_n_workspaces(); i++) this._watchWorkspace(wm.get_workspace_by_index(i));
+        this._readAreas();
     }
 
     disable() {
@@ -58,10 +69,12 @@ export class WindowTracker {
         if (this._restackLater) global.compositor.get_laters().remove(this._restackLater);
         this._restackLater = 0;
         this._seen.clear();
+        this._areas.clear();
     }
 
     _watchWorkspace(ws) {
-        this._wsHandles.push([ws, ws.connect('window-removed', (_ws, win) => this._onWindowRemoved(ws, win))]);
+        this._wsHandles.push([ws, ws.connect('window-removed',
+            handler('windows: window-removed', (_ws, win) => this._onWindowRemoved(ws, win)))]);
     }
 
     isRelevant(win) {
@@ -70,7 +83,11 @@ export class WindowTracker {
 
     _defer(fn) {
         global.compositor.get_laters().add(Meta.LaterType.IDLE, () => {
-            try { fn(); } catch (e) { LOG('windows: deferred call failed', e.message, e.stack); }
+            try {
+                measure('later', 'windows: deferred call', fn);
+            } catch (e) {
+                LOG('windows: deferred call failed', e.message, e.stack);
+            }
             return false;
         });
     }
@@ -108,10 +125,10 @@ export class WindowTracker {
         const attach = () => {
             const actor = win.get_compositor_private();
             if (!actor) return;
-            const id = actor.connect('first-frame', () => {
+            const id = actor.connect('first-frame', handler('windows: first-frame', () => {
                 actor.disconnect(id);
                 decide('first frame');
-            });
+            }));
             // A window opening on a workspace that is not shown draws no frame until it is — Chrome
             // restoring a session, the view gone with its first window — but it is given a size, and
             // is judged by it then. One shown is judged at whichever comes first.
@@ -119,11 +136,11 @@ export class WindowTracker {
                 const r = win.get_frame_rect();
                 return r.width > 0 && r.height > 0;
             };
-            const sizeId = win.connect('size-changed', () => {
+            const sizeId = win.connect('size-changed', handler('windows: size-changed, opening', () => {
                 if (!decided && !sized()) return;
                 win.disconnect(sizeId);
                 if (!decided) this._defer(() => decide('first size'));
-            });
+            }));
             // an X11 window has its class and geometry from its creation, and may never change size
             if (win.get_client_type() === Meta.WindowClientType.X11 && sized())
                 this._defer(() => decide('creation'));
@@ -131,10 +148,10 @@ export class WindowTracker {
         if (win.get_compositor_private()) {
             attach();
         } else {
-            const id = win.connect('notify::compositor-private', () => {
+            const id = win.connect('notify::compositor-private', handler('windows: notify::compositor-private', () => {
                 win.disconnect(id);
                 attach();
-            });
+            }));
         }
     }
 
@@ -194,12 +211,14 @@ export class WindowTracker {
     _connect(win) {
         if (this._connected.has(win)) return;
         this._connected.set(win, [
-            win.connect('unmanaged', () => this._onUnmanaged(win)),
-            win.connect('workspace-changed', () => this._onWorkspaceChanged(win)),
-            win.connect('notify::maximized-horizontally', () => this._onMaximizeChange(win)),
-            win.connect('notify::maximized-vertically', () => this._onMaximizeChange(win)),
-            win.connect('notify::fullscreen', () => this._onMaximizeChange(win)),
-            win.connect('notify::minimized', () => this._onMinimizedChange(win)),
+            win.connect('unmanaged', handler('windows: unmanaged', () => this._onUnmanaged(win))),
+            win.connect('workspace-changed', handler('windows: workspace-changed', () => this._onWorkspaceChanged(win))),
+            win.connect('notify::maximized-horizontally',
+                handler('windows: notify::maximized-horizontally', () => this._onMaximizeChange(win))),
+            win.connect('notify::maximized-vertically',
+                handler('windows: notify::maximized-vertically', () => this._onMaximizeChange(win))),
+            win.connect('notify::fullscreen', handler('windows: notify::fullscreen', () => this._onMaximizeChange(win))),
+            win.connect('notify::minimized', handler('windows: notify::minimized', () => this._onMinimizedChange(win))),
         ]);
     }
 
@@ -271,8 +290,8 @@ export class WindowTracker {
         const action = this._settings.get_string('on-empty-workspace');
         if (action === 'nothing') return;
         const manager = global.workspace_manager;
+        if (!isLive(ws) || manager.get_active_workspace() !== ws) return;
         const i = ws.index();
-        if (i < 0 || manager.get_active_workspace() !== ws) return;
         const holds = w => !w.is_on_all_workspaces() && this.isRelevant(w);
         if (ws.list_windows().some(holds)) return;
         LOG('windows: active ws', i, 'emptied by the user —', action);
@@ -302,17 +321,34 @@ export class WindowTracker {
         if (this._restackLater) return;
         this._restackLater = global.compositor.get_laters().add(Meta.LaterType.IDLE, () => {
             this._restackLater = 0;
-            const ws = global.workspace_manager.get_active_workspace();
-            if (this._registry.windows().some(w => w.get_workspace() === ws))
-                this._dispatch({ type: 'recheck', ws });
+            measure('later', 'windows: after a restack', () => {
+                const ws = global.workspace_manager.get_active_workspace();
+                if (this._registry.windows().some(w => w.get_workspace() === ws))
+                    this._dispatch({ type: 'recheck', ws });
+            });
             return false;
         });
     }
 
+    // Mutter recomputes the work areas, and says so, whenever a workspace is added or removed too:
+    // only a workspace whose area did change is laid out again. One first seen holds nothing yet.
     _onWorkAreasChanged() {
-        const manager = global.workspace_manager;
-        for (let i = 0; i < manager.get_n_workspaces(); i++)
-            this._dispatch({ type: 'recheck', ws: manager.get_workspace_by_index(i), relayout: true });
+        for (const ws of this._readAreas()) this._dispatch({ type: 'recheck', ws, relayout: true });
+    }
+
+    // the workspaces whose primary work area is not the one remembered, remembering the new one
+    _readAreas() {
+        const manager = global.workspace_manager, monitor = global.display.get_primary_monitor();
+        const changed = [];
+        for (let i = 0; i < manager.get_n_workspaces(); i++) {
+            const ws = manager.get_workspace_by_index(i);
+            const r = ws.get_work_area_for_monitor(monitor);
+            const area = `${r.x},${r.y} ${r.width}x${r.height}`;
+            const was = this._areas.get(ws);
+            this._areas.set(ws, area);
+            if (was !== undefined && was !== area) changed.push(ws);
+        }
+        return changed;
     }
 
     // After a shell restart some windows — Chrome web apps among them — come back without the

@@ -4,7 +4,7 @@
 //
 // given.workspaces — the primary monitor's workspaces in order, each { left, right, full, floating }.
 //   A window is a name, or { name, width } for a tile (a share of the work area), or
-//   { name, size: [w, h], place: [x, y], minWidth } for a floating one (shares of the work
+//   { name, size: [w, h], place: [x, y], minWidth, busy } for a floating one (shares of the work
 //   area), or { name, fullscreen: true } for a full one. Tiles are made with Super+Left/Right
 //   from a small floating window, full ones are opened maximized, floating ones opened last.
 // given.active — the workspace shown before `steps` (default 0).
@@ -16,9 +16,12 @@
 //   workspaces, each { left, right, full, tiled: [either side], floating: [...], minimized: [...] },
 //   compared exactly, empty workspaces at the end left out; active — the workspace shown;
 //   focused — the window with the keyboard focus;
-//   check(h) — anything else, returning an error string or null.
+//   quiet — the extension did nothing to any window meanwhile, by its performance report (the
+//   test machine's only; after every scenario it also checks the extension stays still);
+//   check(h) — anything else, returning an error string or null; h.perf and h.perfBefore are the
+//   performance report after `when` and right before it, in the test machine.
 //
-// Actions: ['open', name, { size, maximized, fullscreen, minWidth, stall }], ['tile', name, side],
+// Actions: ['open', name, { size, maximized, fullscreen, minWidth, stall, busy }], ['tile', name, side],
 // ['maximize' | 'unmaximize' | 'fullscreen' | 'unfullscreen' | 'minimize' | 'restore' | 'close'
 // | 'click', name], ['moveTo', name, index], ['activate', index], ['place', name, [x, y]],
 // ['drag', name, 'left' | 'right' | 'top' | [x, y]], ['dragAway', name], ['clickTitle', name],
@@ -28,7 +31,11 @@
 // ['reorder', index, to] — a workspace moved, as in the indicator, ['reenable'] — the extension
 // turned off and on, ['dragWs', index | 'plus', { between: [i, j] } | 'away'] — a workspace's
 // button dragged in the indicator; Chrome's and Android's own: 'openMany', 'chromeQuit',
-// 'chromeRestore', 'dragTab', 'android', 'androidFull', 'androidFloat', 'androidTheme'.
+// 'chromeRestore', 'dragTab', 'android', 'androidFull', 'androidFloat', 'androidTheme';
+// ['wait', null, seconds] — the user does nothing, ['resizeCorner', name, [dw, dh]] — a floating
+// window's bottom right corner dragged by shares of the work area, ['churn', null, n] — n windows
+// opened and closed one after another, every other one maximized, ['addRemoveWorkspace'] — a
+// workspace added at the end and removed again, as GNOME's dynamic workspaces do.
 // A step may end with { quick: true }: the next one follows as soon as nothing changes for a poll,
 // as a person acting at once would, rather than after the shell has been still a while.
 //
@@ -1048,6 +1055,22 @@ export const scenarios = [
         skip: { planner: 'the indicator is not the planner\'s' },
     },
     {
+        // the indicator applies what changed to the buttons it has: a switch builds none of them
+        id: 'indicator#switch-changes-state-only',
+        given: { workspaces: [{ floating: ['A'] }, { floating: ['B', 'C'] }, { floating: ['D'] }] },
+        when: ['activate', 1],
+        then: {
+            active: 1,
+            check: h => {
+                const icons = h.panel.filter(b => !b.plus).map(b => b.icons).join(',');
+                if (icons !== '1,2,1') return `the buttons show ${icons} icons, not 1,2,1`;
+                const built = h.perf.other.filter(o => o.name.startsWith('indicator:'));
+                return built.length ? `switching built ${built.map(o => `${o.n} ${o.name.slice(11)}`).join(', ')}` : null;
+            },
+        },
+        skip: { planner: 'the indicator is not the planner\'s' },
+    },
+    {
         id: 'indicator#drag-between',
         given: { workspaces: [{ floating: ['A'] }, { floating: ['B'] }, { floating: ['C'] }, { floating: ['D'] }], active: 0 },
         when: ['dragWs', 0, { between: [2, 3] }],
@@ -1102,5 +1125,82 @@ export const scenarios = [
         when: ['tile', 'W', 'left'],
         then: { workspaces: [{ floating: ['W'] }], active: 0 },
         skip: { planner: 'turning the extension off and on is the windows adapter\'s, not the planner\'s' },
+    },
+
+    // ── quiet ──────────────────────────────────────────────────────────────────
+    // Judged by the extension's performance report, which only the test machine has: the planner
+    // has neither signals nor time.
+    {
+        id: 'quiet#idle',
+        given: {
+            workspaces: [{ left: 'A', right: 'B' }, { full: 'F' }, { floating: [{ name: 'V', busy: true }, 'X'] }],
+            active: 2,
+        },
+        when: ['wait', null, 5],
+        then: {
+            quiet: true,
+            check: h => {
+                const ran = h.perf.timed.filter(t => t.calls);
+                return ran.length ? `the extension ran while nothing happened: ${ran.map(t => `${t.calls} ${t.kind} ${t.name}`).join(', ')}` : null;
+            },
+        },
+        skip: { planner: 'the planner has neither signals nor time' },
+    },
+    {
+        id: 'quiet#floating-dragged',
+        given: { workspaces: [{ floating: ['W', 'X'] }] },
+        when: ['drag', 'W', [0.65, 0.55]],
+        then: {
+            workspaces: [{ floating: ['W', 'X'] }], active: 0, quiet: true,
+            check: h => sameRect(h.rect('W'), h.before.rect('W')) ? 'W did not move' : null,
+        },
+        skip: { planner: 'the planner has neither signals nor time' },
+    },
+    {
+        id: 'quiet#floating-resized',
+        // apart: the corner grabbed must be W's, not the edge of X beside it
+        given: { workspaces: [{ floating: [{ name: 'W', place: [0.05, 0.05] }, { name: 'X', place: [0.6, 0.55] }] }] },
+        when: ['resizeCorner', 'W', [0.1, 0.1]],
+        then: {
+            workspaces: [{ floating: ['W', 'X'] }], active: 0, quiet: true,
+            check: h => h.rect('W').width > h.before.rect('W').width + 20 ? null : 'W was not resized',
+        },
+        skip: { planner: 'the planner has neither signals nor time' },
+    },
+    {
+        // Mutter says the work areas changed whenever a workspace comes or goes: nothing is laid
+        // out again for that
+        id: 'quiet#work-area-unchanged',
+        given: { workspaces: [{ left: 'A', right: 'B' }, { full: 'F' }], active: 0 },
+        when: ['addRemoveWorkspace'],
+        then: {
+            workspaces: [{ left: 'A', right: 'B' }, { full: 'F' }], active: 0, quiet: true,
+            check: h => {
+                const w = h.perf.timed.find(t => t.name === 'windows: workareas-changed');
+                if (!w) return 'Mutter sent no workareas-changed: the scenario tests nothing';
+                return w.dispatched ? `${w.calls} workareas-changed queued ${w.dispatched} rechecks for an unchanged work area` : null;
+            },
+        },
+        skip: { planner: 'the planner has neither signals nor time' },
+    },
+    {
+        id: 'quiet#still-after-settling',
+        skip: { vm: 'checked after every other scenario', planner: 'the planner has neither signals nor time' },
+        given: { workspaces: [{}] },
+        when: ['open', 'W'],
+        then: {},
+    },
+    {
+        id: 'quiet#nothing-left-behind',
+        given: { workspaces: [{ floating: ['X'] }] },
+        when: ['churn', null, 10],
+        then: {
+            workspaces: [{ floating: ['X'] }],
+            check: h => {
+                const grew = Object.entries(h.perf.sizes).filter(([k, n]) => n !== h.perfBefore.sizes[k]);
+                return grew.length ? `left behind: ${grew.map(([k, n]) => `${k} ${h.perfBefore.sizes[k]} → ${n}`).join(', ')}` : null;
+            },
+        },
+        skip: { planner: 'the planner has neither signals nor time' },
     },
 ];

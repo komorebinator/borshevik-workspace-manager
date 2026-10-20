@@ -14,6 +14,8 @@ import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 import { LOG, logging, name, setLogging } from './log.js';
+import * as perf from './perf.js';
+import { isLive, wsIndex } from './workspaces.js';
 import { Registry } from './registry.js';
 import { plan } from './planner.js';
 import { take } from './snapshot.js';
@@ -25,6 +27,17 @@ import { WindowRules } from './rules.js';
 import { Indicator } from './indicator.js';
 import { WindowRulesUI } from './window-rules-ui.js';
 
+// Read by preferences, which run in another process, and by anyone asking for the report:
+// gdbus call --session --dest org.gnome.Shell --object-path /org/borshevik/WorkspaceManager
+//   --method org.borshevik.WorkspaceManager.GetPerfReport
+const DBUS_PATH = '/org/borshevik/WorkspaceManager';
+const DBUS_IFACE = `<node>
+  <interface name="org.borshevik.WorkspaceManager">
+    <method name="GetPerfReport"><arg type="s" direction="out" name="json"/></method>
+    <method name="ResetPerf"/>
+  </interface>
+</node>`;
+
 // ── the debug log of a plan: what the planner saw, what it decided, and why ──
 
 const fmtRect = r => r ? `${r.x},${r.y} ${r.width}x${r.height}` : '-';
@@ -33,7 +46,7 @@ function fmtWs(ws, snapshot) {
     if (!ws) return '-';
     if (ws.newWorkspace) return `new#${ws.newWorkspace}`;
     const i = snapshot.workspaces.findIndex(s => s.ws === ws);
-    return i >= 0 ? `ws${i}` : `ws?${ws.index?.() ?? ''}`;
+    return i >= 0 ? `ws${i}` : `ws?${ws.index ? wsIndex(ws) : ''}`;
 }
 
 function fmtOp(o, snapshot) {
@@ -86,6 +99,14 @@ export default class BorshevikWorkspaceManager extends Extension {
         const updateLog = () => setLogging(this._settings.get_boolean('debug-logging'));
         updateLog();
         this._logHandle = this._settings.connect('changed::debug-logging', updateLog);
+        const updatePerf = () => perf.setPerf(this._settings.get_boolean('perf-log'));
+        updatePerf();
+        this._perfHandle = this._settings.connect('changed::perf-log', updatePerf);
+        this._dbus = Gio.DBusExportedObject.wrapJSObject(DBUS_IFACE, {
+            GetPerfReport: () => JSON.stringify(perf.perfReport()),
+            ResetPerf: () => perf.resetPerf(),
+        });
+        this._dbus.export(Gio.DBus.session, DBUS_PATH);
 
         this._intents = [];
         this._dispatching = false;
@@ -119,9 +140,9 @@ export default class BorshevikWorkspaceManager extends Extension {
         this._mutterKbSettings.set_strv('toggle-tiled-right', []);
 
         Main.wm.addKeybinding('tile-left', this._settings, Meta.KeyBindingFlags.NONE, Shell.ActionMode.NORMAL,
-            () => this._drag.tileKeyboard('left'));
+            perf.handler('keys: tile-left', () => this._drag.tileKeyboard('left')));
         Main.wm.addKeybinding('tile-right', this._settings, Meta.KeyBindingFlags.NONE, Shell.ActionMode.NORMAL,
-            () => this._drag.tileKeyboard('right'));
+            perf.handler('keys: tile-right', () => this._drag.tileKeyboard('right')));
         Main.wm.addKeybinding('open-rules-ui', this._settings, Meta.KeyBindingFlags.NONE, Shell.ActionMode.NORMAL,
             () => this._rulesUI.toggle());
         this._rulesUI = new WindowRulesUI(this);
@@ -130,6 +151,7 @@ export default class BorshevikWorkspaceManager extends Extension {
         this._windows.enable();
         this._indicator.enable();
         this._windows.adoptExisting();
+        this._watchSizes();
         LOG('enabled');
     }
 
@@ -154,6 +176,11 @@ export default class BorshevikWorkspaceManager extends Extension {
         this._mutterSettings = this._mutterKbSettings = null;
 
         this._settings.disconnect(this._logHandle);
+        this._settings.disconnect(this._perfHandle);
+        this._dbus.unexport();
+        this._dbus = null;
+        perf.unwatchSizes();
+        perf.setPerf(false);
         this._settings = null;
         this._indicator = this._windows = this._drag = this._android = this._executor = null;
         this._registry = this._rules = null;
@@ -164,6 +191,10 @@ export default class BorshevikWorkspaceManager extends Extension {
     dispatch(intent) {
         if (!this._enabled) return;
         LOG('dispatch: queued', intent.type, intent.win ? name(intent.win) : '');
+        if (perf.perfOn()) {
+            perf.noteDispatch(intent.type, (intent.wins ?? (intent.win ? [intent.win] : [])).map(name));
+            if (this._executor?.running) perf.count('other', 'intents queued while the executor ran');
+        }
         this._intents.push(intent);
         this._next();
     }
@@ -174,49 +205,79 @@ export default class BorshevikWorkspaceManager extends Extension {
         global.compositor.get_laters().add(Meta.LaterType.IDLE, () => {
             if (!this._enabled) return false;
             const intent = this._intents.shift();
-            let p = null;
-            try {
-                const floatSizes = (() => {
-                    try { return JSON.parse(this._settings.get_string('float-sizes')); } catch { return {}; }
-                })();
-                const opening = intent.type === 'opened' ? intent.wins : [];
-                const snapshot = take(this._registry, floatSizes, opening);
-                p = plan(snapshot, intent);
-                for (const w of opening) {
-                    const rec = this._registry.get(w);
-                    if (rec) rec.placed = true;
-                }
-                LOG('dispatch:', intent.type, intent.win ? name(intent.win) : '', '→',
-                    p.ops.map(o => o.op).join(' ') || 'nothing', p.activate ? '+ show' : '');
-                if (logging() && (intent.type !== 'recheck' || p.ops.length))
-                    logPlan(snapshot, intent, p);
-            } catch (e) {
-                LOG('dispatch: planning failed', intent.type, e.message, e.stack);
-            }
-            const after = () => {
-                // a role changed sends nothing the indicator follows
-                if (p?.ops.length) this._indicator?.refresh();
-                // guests covered by what the plan did are found once its windows have settled
-                if (intent.type !== 'recheck') {
-                    for (const ws of p?.touched ?? []) {
-                        if (ws && !ws.newWorkspace && ws.index?.() >= 0) this._intents.push({ type: 'recheck', ws });
-                    }
-                }
-                this._dispatching = false;
-                this._next();
-            };
-            if (p && p.ops.length + (p.activate ? 1 : 0) > 0) {
-                try {
-                    this._executor.run(p, after);
-                } catch (e) {
-                    LOG('dispatch: executing failed', e.message, e.stack);
-                    after();
-                }
-            } else {
-                after();
-            }
+            perf.measure('dispatch', intent.type, () => this._dispatchOne(intent));
             return false;
         });
+    }
+
+    _dispatchOne(intent) {
+        let p = null;
+        try {
+            const floatSizes = (() => {
+                try { return JSON.parse(this._settings.get_string('float-sizes')); } catch { return {}; }
+            })();
+            const opening = intent.type === 'opened' ? intent.wins : [];
+            const snapshot = perf.measure('snapshot', intent.type, take, this._registry, floatSizes, opening);
+            p = perf.measure('plan', intent.type, plan, snapshot, intent);
+            if (!p.ops.length && !p.activate) perf.count('empty plan', intent.type);
+            for (const o of p.ops) perf.noteOp(o.op, o.win ? name(o.win) : null);
+            for (const w of opening) {
+                const rec = this._registry.get(w);
+                if (rec) rec.placed = true;
+            }
+            LOG('dispatch:', intent.type, intent.win ? name(intent.win) : '', '→',
+                p.ops.map(o => o.op).join(' ') || 'nothing', p.activate ? '+ show' : '');
+            if (logging() && (intent.type !== 'recheck' || p.ops.length))
+                logPlan(snapshot, intent, p);
+        } catch (e) {
+            LOG('dispatch: planning failed', intent.type, e.message, e.stack);
+        }
+        const after = () => {
+            // a role changed sends nothing the indicator follows
+            if (p?.ops.length) this._indicator?.refresh();
+            // guests covered by what the plan did are found once its windows have settled
+            if (intent.type !== 'recheck') {
+                for (const ws of p?.touched ?? []) {
+                    if (ws && !ws.newWorkspace && isLive(ws)) {
+                        perf.noteDispatch('recheck', []);
+                        this._intents.push({ type: 'recheck', ws });
+                    }
+                }
+            }
+            this._dispatching = false;
+            this._next();
+        };
+        if (p && p.ops.length + (p.activate ? 1 : 0) > 0) {
+            try {
+                perf.measure('execute', intent.type, () => this._executor.run(p, after));
+            } catch (e) {
+                LOG('dispatch: executing failed', e.message, e.stack);
+                after();
+            }
+        } else {
+            after();
+        }
+    }
+
+    // what the report says the extension holds
+    _watchSizes() {
+        const wm = global.workspace_manager;
+        perf.watchSize('workspaces', () => wm.get_n_workspaces());
+        perf.watchSize('windows in the session', () => global.display.list_all_windows().length);
+        perf.watchSize('registry: managed windows', () => this._registry.windows().length);
+        perf.watchSize('registry: ignored windows', () => this._registry._ignored.size);
+        perf.watchSize('intents waiting', () => this._intents.length);
+        perf.watchSize('windows: windows followed', () => this._windows._connected.size);
+        perf.watchSize('windows: states remembered', () => this._windows._seen.size);
+        perf.watchSize('windows: workspace handlers', () => this._windows._wsHandles.length);
+        perf.watchSize('windows: work areas remembered', () => this._windows._areas.size);
+        perf.watchSize('executor: windows waiting for a size', () => this._executor._pending.size);
+        perf.watchSize('android: windows watched', () => this._android._state?.size ?? 0);
+        perf.watchSize('android: actor handlers', () =>
+            [...(this._android._state?.values() ?? [])].reduce((n, st) => n + st.handlers.length, 0));
+        perf.watchSize('android: closed windows awaiting a replacement', () => this._android._gone.length);
+        perf.watchSize('indicator: workspace handlers', () => this._indicator._wsHandles.length);
+        perf.watchSize('indicator: buttons', () => this._indicator.size);
     }
 
     // ── for rules-ui ─────────────────────────────────────────────────────────

@@ -8,6 +8,8 @@
  */
 
 import { LOG, name } from './log.js';
+import { handler } from './perf.js';
+import { isLive } from './workspaces.js';
 
 export class Executor {
     constructor({ registry, settings }) {
@@ -44,10 +46,10 @@ export class Executor {
 
     _onNextSize(win, fn) {
         this.forgetPending(win);
-        this._pending.set(win, win.connect('size-changed', () => {
+        this._pending.set(win, win.connect('size-changed', handler('executor: size-changed, waited for', () => {
             this.forgetPending(win);
             fn();
-        }));
+        })));
     }
 
     run(plan, done) {
@@ -66,7 +68,7 @@ export class Executor {
         try {
             // whether to show anything is the planner's (behaviour#view-follows-user)
             const target = this._resolve(plan.activate, refs);
-            if (target && target.index() >= 0 && target !== wm.get_active_workspace()) {
+            if (isLive(target) && target !== wm.get_active_workspace()) {
                 const focus = plan.focus;
                 if (focus && focus.get_workspace() === target && !focus.minimized) {
                     // with the focus: when focus follows the mouse, GNOME would give it to

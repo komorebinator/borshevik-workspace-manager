@@ -4,7 +4,8 @@
 //
 // A state is { active, n, overview, wa, focus, windows: [{ name, ws, rect, max, fs, min, z }], panel },
 // panel being the indicator's workspace buttons as shown, [{ num, icons, plus, x, y, w, h }]: the
-// test machine's only, the planner having no indicator.
+// test machine's only, the planner having no indicator. So are perf and perfBefore, the extension's
+// performance report taken after the scenario's `when` and right before it (perf.js#perfReport).
 import { helpers } from './scenarios.js';
 
 export function role(w, wa, tol = 10) {
@@ -75,6 +76,7 @@ function view(st, before, initial) {
     const changed = (s, n, what) => helpers.sameRect(rectOf(st, n), rectOf(s, n)) ? null : `${n} moved or resized ${what}`.trim();
     return {
         wa: st.wa, overview: st.overview, active: st.active, panel: st.panel ?? [],
+        perf: st.perf, perfBefore: st.perfBefore,
         rect: n => rectOf(st, n), win,
         windowsOn: i => st.windows.filter(w => w.ws === i),
         share: (w, h) => ({ width: w * st.wa.width, height: h * st.wa.height }),
@@ -95,6 +97,9 @@ export function judge(then, st, before, initial) {
         errors.push(`expected workspace ${then.active} shown, found ${st.active}`);
     if (then.focused !== undefined && st.focus !== then.focused)
         errors.push(`expected ${then.focused} focused, found ${st.focus ?? 'nothing'}`);
+    // judged by the performance report, which only the test machine has
+    if (then.quiet && st.perf?.ops.length)
+        errors.push(`expected the extension to do nothing, found ${st.perf.ops.map(o => `${o.n} ${o.name}`).join(', ')}`);
     if (then.check) {
         let e;
         try { e = then.check(view(st, before, initial)); } catch (x) { e = `check threw: ${x.message}`; }

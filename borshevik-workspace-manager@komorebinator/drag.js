@@ -10,6 +10,7 @@ import Meta from 'gi://Meta';
 import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { LOG, name } from './log.js';
+import { handler } from './perf.js';
 
 export const SNAP_PX = 32;
 export const DRAG_THRESHOLD = 20;
@@ -36,8 +37,8 @@ export class DragController {
         Main.layoutManager.uiGroup.add_child(this._preview);
         const d = global.display;
         this._handles = [
-            [d, d.connect('grab-op-begin', (_d, win, op) => this._onGrabBegin(win, op))],
-            [d, d.connect('grab-op-end', (_d, win, op) => this._onGrabEnd(win, op))],
+            [d, d.connect('grab-op-begin', handler('drag: grab-op-begin', (_d, win, op) => this._onGrabBegin(win, op)))],
+            [d, d.connect('grab-op-end', handler('drag: grab-op-end', (_d, win, op) => this._onGrabEnd(win, op)))],
         ];
     }
 
@@ -89,9 +90,10 @@ export class DragController {
             // The pointer, not the window: under a move grab the stage sees no motion, and a window
             // pushed against the panel stops moving while the pointer goes on into the top zone.
             this._unfollowPointer();
-            this._pointerId = global.backend.get_cursor_tracker().connect('position-invalidated', () => {
-                try { this._follow(); } catch (e) { LOG('drag: following the pointer failed', e.message); }
-            });
+            this._pointerId = global.backend.get_cursor_tracker().connect('position-invalidated',
+                handler('drag: position-invalidated', () => {
+                    try { this._follow(); } catch (e) { LOG('drag: following the pointer failed', e.message); }
+                }));
             return;
         }
         if (rec && (rec.role === 'tiled-left' || rec.role === 'tiled-right')) this._resize = win;

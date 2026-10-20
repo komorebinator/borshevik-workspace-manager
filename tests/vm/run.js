@@ -71,7 +71,6 @@ function shellHelper(Main) {
                 active: wm().get_active_workspace_index(), n: wm().n_workspaces,
                 overview: Main.overview.visible, wa: area(), stage: [global.stage.width, global.stage.height],
                 panel: panel(),
-                focus: global.display.focus_window && isTest(global.display.focus_window) ? nameOf(global.display.focus_window) : null,
                 windows: list.map(w => {
                     const r = w.get_frame_rect();
                     return {
@@ -118,6 +117,12 @@ function shellHelper(Main) {
             return 'ok';
         },
         activate(i) { wm().get_workspace_by_index(i).activate(global.get_current_time()); return 'ok'; },
+        // as GNOME's dynamic workspaces do: one added at the end and removed again
+        addRemoveWorkspace() {
+            wm().append_new_workspace(false, global.get_current_time());
+            wm().remove_workspace(wm().get_workspace_by_index(wm().get_n_workspaces() - 1), global.get_current_time());
+            return 'ok';
+        },
         // as dragging a workspace in the indicator does
         reorder(i, to) { wm().reorder_workspace(wm().get_workspace_by_index(i), to); return 'ok'; },
         // as from Extensions; asked for one at a time, since GNOME ignores an enable it is asked
@@ -203,6 +208,7 @@ function openArgs(name, opts = {}, wa) {
     if (opts.fullscreen) args.push('--fullscreen');
     if (opts.app) args.push('--app', opts.app);
     if (opts.stall) args.push('--stall', Math.round(opts.stall * 1000));
+    if (opts.busy) args.push('--busy');
     return args;
 }
 
@@ -355,21 +361,8 @@ function act(action) {
     case 'reorder':
         shell(`reorder(${wsIndex(name, st)}, ${arg})`);
         break;
-    case 'place':
-        shell(`act(${q(name)}, 'place', ${arg[0]}, ${arg[1]})`);
-        break;
-    case 'drag': drag(st, name, arg); break;
-    case 'dragAway': drag(st, name, 'away'); break;
-    case 'reenable':
-        // turned off and on again: what it knew of the windows is gone
-        for (const on of [false, true]) {
-            shell(`extension(${on})`);
-            const start = Date.now();
-            while (shell('extensionOn()') !== String(on)) {
-                if (Date.now() - start > 10000) throw new Error(`the extension did not turn ${on ? 'on' : 'off'}`);
-                sleep(200);
-            }
-        }
+    case 'addRemoveWorkspace':
+        shell('addRemoveWorkspace()');
         break;
     case 'resizeEdge': {
         // a hand on the inner edge of a tile: GTK's resize border lies just outside the frame, so
@@ -406,6 +399,26 @@ function act(action) {
     // quick: on to the next step as soon as one poll finds nothing changing, for what a person
     // does at once — not after the shell has been still a while
     return opts?.quick ? settle(150, 12000, 1) : settle();
+}
+
+// ── the extension's performance report ──────────────────────────────────────────
+
+const perfReport = () => {
+    const r = vm('perf', 'json');
+    if (!r.ok) throw new Error(`no performance report: ${r.err || r.out}`);
+    return JSON.parse(r.out);
+};
+const opsIn = report => report.ops.map(o => `${o.n} ${o.name}`).join(', ');
+
+// After a scenario has settled the extension must stay still: a loop between it and an app goes
+// on long after the windows look settled to a poll.
+const STILL_MS = 1000;
+function stillAfter() {
+    vm('perf', 'reset');
+    sleep(STILL_MS);
+    const r = perfReport();
+    return r.ops.length ? [`the extension went on acting after the shell had settled: ${opsIn(r)} in ${STILL_MS} ms` +
+        ` (intents: ${r.intents.map(i => `${i.n} ${i.name}`).join(', ')})`] : [];
 }
 
 // ── given ──────────────────────────────────────────────────────────────────────
@@ -537,6 +550,8 @@ const chosen = scenarios.filter(s => `${s.id}${s.group ? ` [${s.group}]` : ''}`.
 let failed = 0, passed = 0, skipped = 0;
 
 if (vm('eval', 'typeof Main').out !== 'object') throw new Error('Shell.Eval has no Main in scope');
+// on for the whole run: what the extension does during a scenario's `when`, and after it
+if (!vm('perf', 'on').ok) throw new Error('the performance log cannot be switched on');
 
 for (const s of chosen) {
     const label = `${s.id}${s.group ? ` [${s.group}]` : ''}`;
@@ -548,8 +563,12 @@ for (const s of chosen) {
         const initial = build(s.given);
         let before = initial;
         for (const step of s.given.steps ?? []) before = act(step);
+        vm('perf', 'reset');
+        const perfBefore = perfReport();
         const after = act(s.when);
-        errors = judge(s.then, after, before, initial);
+        after.perf = perfReport();
+        after.perfBefore = perfBefore;
+        errors = [...judge(s.then, after, before, initial), ...stillAfter()];
     } catch (e) {
         errors = [`error: ${e.message}`];
     }
@@ -563,5 +582,6 @@ for (const s of chosen) {
     }
 }
 try { reset(); } catch {}
+vm('perf', 'off');
 print(`\n${passed} ok, ${failed} failed, ${skipped} skipped`);
 System.exit(failed ? 1 : 0);

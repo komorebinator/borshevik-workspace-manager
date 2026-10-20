@@ -6,6 +6,11 @@
       <summary>Debug logging</summary>
       <description>When enabled, writes diagnostic messages to the system journal.</description>
     </key>
+    <key name="perf-log" type="b">
+      <default>false</default>
+      <summary>Performance log</summary>
+      <description>When enabled, counts how often the extension's handlers and planning run and how long they take, for the performance report. Switching it on starts a new report.</description>
+    </key>
     <key name="overview-on-last-workspace" type="b">
       <default>true</default>
       <summary>Open overview when switching to the last workspace</summary>

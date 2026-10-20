@@ -3,10 +3,12 @@
 // rules can match it. Runs as tester in the test machine under gjs.
 //
 //   gjs -m test-window.js <name> [width height] [--min-width px]
-//                         [--maximized] [--fullscreen] [--app id] [--stall ms]
+//                         [--maximized] [--fullscreen] [--app id] [--stall ms] [--busy]
 //
 // --stall: an app slow to start — once shown, the window answers nothing for that long, so GNOME
 // has it neither sized nor drawn (behaviour#role-by-size#slow-to-open).
+// --busy: an app that draws all the time, as one playing a video does: its content changes at
+// every frame (behaviour#quiet#idle).
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 import Gtk from 'gi://Gtk?version=4.0';
@@ -21,6 +23,7 @@ const fullscreen = flag('--fullscreen');
 const minWidth = Number(option('--min-width') ?? 0);
 const appName = option('--app');
 const stall = Number(option('--stall') ?? 0);
+const busy = flag('--busy');
 const [name, width = '400', height = '300'] = args;
 
 const app = new Gtk.Application({
@@ -36,6 +39,7 @@ app.connect('activate', () => {
     // a window cannot be made narrower than its content: this is how a smallest width is had
     if (minWidth > 0) label.set_size_request(minWidth, -1);
     win.set_child(label);
+    if (busy) label.add_tick_callback(() => { label.label = `${name} ${String(GLib.get_monotonic_time() % 1000).padStart(3, '0')}`; return GLib.SOURCE_CONTINUE; });
     if (maximized) win.maximize();
     if (fullscreen) win.fullscreen();
     win.present();

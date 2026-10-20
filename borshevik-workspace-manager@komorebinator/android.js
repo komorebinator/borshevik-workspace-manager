@@ -13,6 +13,8 @@ import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 import Meta from 'gi://Meta';
 import { LOG, name } from './log.js';
+import { handler, measure } from './perf.js';
+import { isLive, wsIndex } from './workspaces.js';
 
 export const ANDROID_CLASS = /^(Waydroid|waydroid[.].+)$/;
 export const ANDROID_REPLACE_MS = 500;
@@ -83,7 +85,7 @@ export class AndroidWindows {
         this._state.set(win, st);
         if (!adopt) this.claimPlace(win);
         // before windows#_onUnmanaged, which drops the record the origin is read from
-        st.unmanagedId = win.connect('unmanaged', () => {
+        st.unmanagedId = win.connect('unmanaged', handler('android: unmanaged', () => {
             st.handlers = [];   // its actors went with it, and their handlers with them
             this._cancelRelease(win);
             (this._closed ??= new WeakSet()).add(win);
@@ -91,7 +93,7 @@ export class AndroidWindows {
             this._goneOrigins ??= new WeakMap();
             this._goneOrigins.set(win, origin);
             this._state?.delete(win);
-        });
+        }));
         this._follow(win, win.get_compositor_private());
         this._check(win);
         st.adopt = false;
@@ -101,15 +103,15 @@ export class AndroidWindows {
         if (!actor || this._followed.has(actor)) return;
         this._followed.add(actor);
         const st = this._state.get(win);
-        const changed = () => this._scheduleCheck(win);
-        st.handlers.push([actor, actor.connect('child-added', (_a, child) => {
+        const changed = what => handler(`android: ${what}`, () => this._scheduleCheck(win));
+        st.handlers.push([actor, actor.connect('child-added', handler('android: child-added', (_a, child) => {
             this._follow(win, child);
-            changed();
-        })]);
-        st.handlers.push([actor, actor.connect('child-removed', changed)]);
+            this._scheduleCheck(win);
+        }))]);
+        st.handlers.push([actor, actor.connect('child-removed', changed('child-removed'))]);
         if (GObject.type_is_a(actor.constructor.$gtype, GObject.type_from_name('MetaSurfaceActor'))) {
-            st.handlers.push([actor, actor.connect('notify::allocation', changed)]);
-            st.handlers.push([actor, actor.connect('notify::visible', changed)]);
+            st.handlers.push([actor, actor.connect('notify::allocation', changed('notify::allocation'))]);
+            st.handlers.push([actor, actor.connect('notify::visible', changed('notify::visible'))]);
         }
         for (const child of actor.get_children()) this._follow(win, child);
     }
@@ -129,7 +131,7 @@ export class AndroidWindows {
         st.pending = true;
         global.compositor.get_laters().add(Meta.LaterType.IDLE, () => {
             st.pending = false;
-            if (this._state?.has(win)) this._check(win);
+            if (this._state?.has(win)) measure('later', 'android: check', () => this._check(win));
             return false;
         });
     }
@@ -166,7 +168,9 @@ export class AndroidWindows {
         if (st.release) return;
         st.release = GLib.timeout_add(GLib.PRIORITY_DEFAULT, ANDROID_REPLACE_MS, () => {
             st.release = null;
-            if (st.fullScreen && this._state?.has(win) && this._fillsWindow(win) === false) this._release(win);
+            measure('timer', 'android: release', () => {
+                if (st.fullScreen && this._state?.has(win) && this._fillsWindow(win) === false) this._release(win);
+            });
             return GLib.SOURCE_REMOVE;
         });
     }
@@ -180,7 +184,7 @@ export class AndroidWindows {
 
     _release(win) {
         const origin = this._origin(win);
-        LOG('android: floating again', name(win), 'origin=', origin?.index() ?? 'none');
+        LOG('android: floating again', name(win), 'origin=', origin ? wsIndex(origin) : 'none');
         this._state.get(win).fullScreen = false;
         this._registry.forget(win);
         this._windows.ignore(win);
@@ -195,7 +199,7 @@ export class AndroidWindows {
     _return(win, origin) {
         const st = this._state?.get(win);
         if (st) st.inheritedOrigin = null;
-        if (!origin || origin.index() < 0 || origin === win.get_workspace()) return;
+        if (!isLive(origin) || origin === win.get_workspace()) return;
         this._dispatch({ type: 'returnTo', win, ws: origin, show: true });
     }
 
@@ -203,10 +207,10 @@ export class AndroidWindows {
 
     awaitReplacement(ws, win) {
         const gone = { cls: win.get_wm_class(), ws, origin: this._goneOrigins?.get(win) ?? null };
-        LOG('android: closed', gone.cls, 'on ws', ws.index(), '— awaiting a replacement');
+        LOG('android: closed', gone.cls, 'on ws', wsIndex(ws), '— awaiting a replacement');
         gone.timer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, ANDROID_REPLACE_MS, () => {
             this._gone.splice(this._gone.indexOf(gone), 1);
-            this._windows._leaveIfEmpty(ws);
+            measure('timer', 'android: no replacement came', () => this._windows._leaveIfEmpty(ws));
             return GLib.SOURCE_REMOVE;
         });
         this._gone.push(gone);
@@ -217,9 +221,9 @@ export class AndroidWindows {
         if (i < 0) return;
         const [gone] = this._gone.splice(i, 1);
         GLib.source_remove(gone.timer);
-        LOG('android: replaces a closed window', gone.cls, 'ws', gone.ws.index());
+        LOG('android: replaces a closed window', gone.cls, 'ws', wsIndex(gone.ws));
         if (gone.origin) this._state.get(win).inheritedOrigin = gone.origin;
-        if (gone.ws.index() >= 0 && win.get_workspace() !== gone.ws)
+        if (isLive(gone.ws) && win.get_workspace() !== gone.ws)
             this._dispatch({ type: 'returnTo', win, ws: gone.ws, show: false });
     }
 

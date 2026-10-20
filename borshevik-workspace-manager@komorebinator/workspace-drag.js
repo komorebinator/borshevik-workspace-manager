@@ -11,18 +11,12 @@ import Clutter from 'gi://Clutter';
 import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { LOG } from './log.js';
+import { handler } from './perf.js';
+import { isLive } from './workspaces.js';
 
 const DRAG_THRESHOLD_PX = 6;
 const GAP_MS = 150;
 const OUTLINE_PX = 2;   // .bwm-ws-dragged's border, around the clone
-
-const alive = ws => {
-    const wm = global.workspace_manager;
-    for (let i = 0; i < wm.get_n_workspaces(); i++) {
-        if (wm.get_workspace_by_index(i) === ws) return true;
-    }
-    return false;
-};
 
 export class WorkspaceDrag {
     // buttons: the indicator's, in the order shown; source: the one pressed; onEnd(dragged): called
@@ -51,7 +45,7 @@ export class WorkspaceDrag {
     _listen(actor, signal) {
         if (this._captureId) this._listening.disconnect(this._captureId);
         this._listening = actor;
-        this._captureId = actor.connect(signal, (_a, ev) => this._onEvent(ev));
+        this._captureId = actor.connect(signal, handler(`indicator: drag, ${signal}`, (_a, ev) => this._onEvent(ev)));
     }
 
     cancel() {
@@ -158,7 +152,7 @@ export class WorkspaceDrag {
         const src = this._source.ws;
         const next = this._others[k];
         const prev = this._others[k - 1];
-        if (!alive(src) || !alive(next?.ws ?? prev.ws)) {
+        if (!isLive(src) || !isLive(next?.ws ?? prev.ws)) {
             LOG('indicator: drop on a workspace that is gone, nothing moved');
             return;
         }
