@@ -6,7 +6,6 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
@@ -14,7 +13,6 @@ import { LOG, name } from './log.js';
 
 export const SNAP_PX = 32;
 export const DRAG_THRESHOLD = 20;
-const POLL_MS = 33;
 
 export class DragController {
     constructor({ registry, windows, rules, dispatch, executor }) {
@@ -27,7 +25,7 @@ export class DragController {
         this._drag = null;
         this._zone = null;
         this._resize = null;
-        this._pollId = null;
+        this._pointerId = 0;
         this._plainTiles = new Map();
         this._handles = [];
     }
@@ -46,8 +44,7 @@ export class DragController {
     disable() {
         for (const [obj, id] of this._handles) obj.disconnect(id);
         this._handles = [];
-        if (this._pollId) GLib.source_remove(this._pollId);
-        this._pollId = null;
+        this._unfollowPointer();
         this._drag = this._resize = null;
         this._plainTiles.clear();
         this._preview?.destroy();
@@ -89,13 +86,11 @@ export class DragController {
                 win, startX: x, startY: y, detached: false, plain,
                 blocking: !!rec && rec.role !== 'floating',
             };
-            this._pollId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, POLL_MS, () => {
-                if (!this._drag) {
-                    this._pollId = null;
-                    return GLib.SOURCE_REMOVE;
-                }
-                try { this._poll(); } catch (e) { LOG('drag: poll failed', e.message); }
-                return GLib.SOURCE_CONTINUE;
+            // The pointer, not the window: under a move grab the stage sees no motion, and a window
+            // pushed against the panel stops moving while the pointer goes on into the top zone.
+            this._unfollowPointer();
+            this._pointerId = global.backend.get_cursor_tracker().connect('position-invalidated', () => {
+                try { this._follow(); } catch (e) { LOG('drag: following the pointer failed', e.message); }
             });
             return;
         }
@@ -108,7 +103,16 @@ export class DragController {
         return i < 0 ? 0 : i;
     }
 
-    _poll() {
+    _unfollowPointer() {
+        if (this._pointerId) global.backend.get_cursor_tracker().disconnect(this._pointerId);
+        this._pointerId = 0;
+    }
+
+    _follow() {
+        if (!this._drag) {
+            this._unfollowPointer();
+            return;
+        }
         const d = this._drag;
         const [x, y] = global.get_pointer();
         const monitor = this._monitorAt(x, y);
@@ -149,6 +153,7 @@ export class DragController {
         if (this._drag?.win === win) {
             const { plain, monitor } = this._drag;
             const zone = this._zone;
+            this._unfollowPointer();
             this._drag = null;
             this._zone = null;
             this._preview.hide();

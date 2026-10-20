@@ -413,7 +413,7 @@ send([btn(True)]); time.sleep(0.15)
 steps = 24
 for i in range(1, steps + 1):
     send(at(x1 + (x2 - x1) * i / steps, y1 + (y2 - y1) * i / steps))
-time.sleep(0.35)   # the extension polls a drag every 33ms: let it see where the pointer is
+time.sleep(0.35)   # held still before the release, as a hand would
 send([btn(False)])
 PY
 }
