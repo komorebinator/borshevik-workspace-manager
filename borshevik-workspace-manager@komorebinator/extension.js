@@ -24,6 +24,7 @@ import { WindowTracker } from './windows.js';
 import { DragController } from './drag.js';
 import { AndroidWindows } from './android.js';
 import { WindowRules } from './rules.js';
+import { catchUp } from './rule-changes.js';
 import { Indicator } from './indicator.js';
 import { WindowRulesUI } from './window-rules-ui.js';
 
@@ -102,6 +103,12 @@ export default class BorshevikWorkspaceManager extends Extension {
         const updatePerf = () => perf.setPerf(this._settings.get_boolean('perf-log'));
         updatePerf();
         this._perfHandle = this._settings.connect('changed::perf-log', updatePerf);
+        // before anything reads the rules, so the windows already open meet the current ones
+        try {
+            catchUp(this._settings, this.dir.get_child('rule-changes'));
+        } catch (e) {
+            console.warn(`[BWM] rule-changes: ${e.message}`);
+        }
         this._dbus = Gio.DBusExportedObject.wrapJSObject(DBUS_IFACE, {
             GetPerfReport: () => JSON.stringify(perf.perfReport()),
             ResetPerf: () => perf.resetPerf(),
