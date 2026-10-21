@@ -38,6 +38,11 @@
       <summary>Window rules</summary>
       <description>JSON array of window rule objects with conditions and actions.</description>
     </key>
+    <key name="rules-version" type="i">
+      <default>0</default>
+      <summary>How far the saved window rules have been brought up to date</summary>
+      <description>The last version in rule-changes/ applied to the saved window rules. Set by the extension, not by hand.</description>
+    </key>
     <key name="on-empty-workspace" type="s">
       <default>'prev'</default>
       <summary>Action when last window on workspace is closed</summary>

@@ -10,7 +10,9 @@
 // given.active — the workspace shown before `steps` (default 0).
 // given.steps — actions done after the layout is built, for the history a scenario needs.
 // given.settings — extension settings for this scenario; the view-moving ones are off otherwise.
-//   window-rules is 'kind:Name', one rule of that kind on test window Name, or the setting's JSON.
+//   window-rules is 'kind:Name', one rule of that kind on test window Name, { without, plus } —
+//   the schema's defaults without the ids in `without`, and a 'kind:Name' rule after them — or
+//   the setting's JSON; rules-version a number.
 // given.focusMode — GNOME's focus mode, 'sloppy' (Borshevik's default, and so the default here),
 //   'click' or 'mouse'.
 // when — one action. then — what must be seen afterwards:
@@ -40,13 +42,18 @@
 // rules overlay: ['rulesOpen'] — opened with its key, ['rulesClick', control] — a control clicked
 // (ruleButton, tab:<i>, row:<i>, newFor:<window>, save, cancel, delete, condition:<label>,
 // action:<label>), ['rulesType', 'class' | 'title', text] — a pattern typed into the form. h.rules
-// is the overlay as shown (null when closed), h.saved the saved rules as `class|actions`.
+// is the overlay as shown (null when closed), h.saved the saved rules as `class|actions`,
+// h.rulesVersion the rules-version setting and h.rulesWritten whether the account has rules saved.
 // A step may end with { quick: true }: the next one follows as soon as nothing changes for a poll,
 // as a person acting at once would, rather than after the shell has been still a while.
 //
 // skip: { vm, planner } — why a level cannot act it out yet.
 
 const TILE = [0.4, 1.0];
+
+// the default rules rule-changes/1.json adds to saved lists
+const INPUT_METHOD_RULE = 'c5e8a2f4-3b71-4d9e-8a16-0f2b7c9d4e31';
+const DISCOVER_RULE = '69a952e9-8a2d-446a-8ccf-c62c4e44826e';
 
 const sameRect = (a, b, tol = 12) =>
     Math.abs(a.x - b.x) <= tol && Math.abs(a.y - b.y) <= tol &&
@@ -1055,6 +1062,47 @@ export const scenarios = [
         when: ['open', 'W'],
         then: { workspaces: [{ floating: ['X', 'W'] }], active: 0 },
         skip: { planner: 'matching windows against rules is rules.js\'s, not the planner\'s' },
+    },
+    {
+        // saved before the defaults for Android's input method and its Discover feed existed
+        id: 'window-rules#new-defaults-reach-saved-list',
+        given: {
+            workspaces: [{}],
+            settings: { 'window-rules': { without: [INPUT_METHOD_RULE, DISCOVER_RULE], plus: 'ignore:Mine' }, 'rules-version': 0 },
+        },
+        when: ['reenable'],
+        then: {
+            check: h => {
+                const want = [...h.before.saved, '^waydroid[.]InputMethod$|ignore', '^waydroid[.]GoogleDiscoverWindow|close'];
+                if (JSON.stringify(h.saved) !== JSON.stringify(want))
+                    return `the saved rules are ${h.saved.join(', ')}, not ${want.join(', ')}`;
+                return h.rulesVersion === 1 ? null : `rules-version is ${h.rulesVersion}, not 1`;
+            },
+        },
+        skip: { planner: 'the saved rules are rule-changes.js\'s, not the planner\'s' },
+    },
+    {
+        // brought up to date, then the user deleted the Discover rule
+        id: 'window-rules#deleted-default-stays-deleted',
+        given: { workspaces: [{}], settings: { 'window-rules': { without: [DISCOVER_RULE] }, 'rules-version': 1 } },
+        when: ['reenable'],
+        then: {
+            check: h => (JSON.stringify(h.saved) === JSON.stringify(h.before.saved) ? null
+                : `the saved rules went from ${h.before.saved.join(', ')} to ${h.saved.join(', ')}`),
+        },
+        skip: { planner: 'the saved rules are rule-changes.js\'s, not the planner\'s' },
+    },
+    {
+        id: 'window-rules#unsaved-rules-untouched',
+        given: { workspaces: [{}] },
+        when: ['reenable'],
+        then: {
+            check: h => {
+                if (h.rulesWritten !== false) return 'the rules were written into the account';
+                return h.rulesVersion === 1 ? null : `rules-version is ${h.rulesVersion}, not the newest, 1`;
+            },
+        },
+        skip: { planner: 'the saved rules are rule-changes.js\'s, not the planner\'s' },
     },
 
     // ── rules-overlay ──────────────────────────────────────────────────────────

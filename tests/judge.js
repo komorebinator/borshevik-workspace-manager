@@ -84,6 +84,8 @@ function view(st, before, initial) {
         // the rules overlay (null when closed) and the saved rules as `class|actions`: the test
         // machine's only
         rules: st.rules, saved: st.saved,
+        // rules-version, and whether the account has rules of its own saved: the test machine's only
+        rulesVersion: st.rulesVersion, rulesWritten: st.rulesWritten,
         unchanged: n => changed(before, n, ''),
         unchangedSinceGiven: n => changed(initial, n, 'since the layout was built'),
     };

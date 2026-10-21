@@ -142,6 +142,9 @@ function shellHelper(Main) {
                             Object.entries(r.actions ?? {}).filter(([, a]) => a.enabled).map(([k]) => k).join('+'));
                     } catch { return null; }
                 })(),
+                // how far the saved rules were brought up to date, and whether there are any saved
+                rulesVersion: (() => { try { return settings().get_int('rules-version'); } catch { return null; } })(),
+                rulesWritten: (() => { try { return settings().get_user_value('window-rules') !== null; } catch { return null; } })(),
                 focus: global.display.focus_window && isTest(global.display.focus_window) ? nameOf(global.display.focus_window) : null,
                 windows: list.map(w => {
                     const r = w.get_frame_rect();
@@ -209,10 +212,17 @@ function shellHelper(Main) {
         hasAndroid() { return String(wins().some(isAndroid)); },
         set(key, value) {
             const s = settings();
-            if (typeof value === 'boolean') s.set_boolean(key, value); else s.set_string(key, value);
+            if (typeof value === 'boolean') s.set_boolean(key, value);
+            else if (typeof value === 'number') s.set_int(key, value);
+            else s.set_string(key, value);
             return 'ok';
         },
         reset(key) { settings().reset(key); return 'ok'; },
+        // the schema's default window rules without the ones named, as the setting's JSON
+        defaultRules(without) {
+            return JSON.stringify(JSON.parse(settings().get_default_value('window-rules').deepUnpack())
+                .filter(r => !without.includes(r.id)));
+        },
         // GNOME's focus mode — 'click', 'sloppy' or 'mouse' — for the scenarios that depend on it
         focusMode(mode) {
             new imports.gi.Gio.Settings({ schema_id: 'org.gnome.desktop.wm.preferences' }).set_string('focus-mode', mode);
@@ -605,6 +615,7 @@ function reset() {
     const start = Date.now();
     while (state().windows.length && Date.now() - start < 10000) sleep(300);
     shell('reset("window-rules")');
+    shell('reset("rules-version")');
     // Borshevik's own default (its ShellCustomizations#defaults), and the author's: focus follows the mouse
     shell("focusMode('sloppy')");
     for (const [k, v] of Object.entries(TEST_SETTINGS)) shell(`set(${q(k)}, ${q(v)})`);
@@ -616,10 +627,17 @@ const nameOf = spec => typeof spec === 'string' ? spec : spec.name;
 
 function build(given) {
     if (given.focusMode) shell(`focusMode(${q(given.focusMode)})`);
-    for (const [k, v] of Object.entries(given.settings ?? {}))
-        // window-rules: 'kind:Class' for a rule of one kind on one test window, or the setting's
-        // own JSON for anything else
-        shell(`set(${q(k)}, ${q(k === 'window-rules' && !v.startsWith('[') ? ruleFor(v) : v)})`);
+    for (const [k, v] of Object.entries(given.settings ?? {})) {
+        // window-rules: 'kind:Class' for a rule of one kind on one test window, { without, plus }
+        // for the schema's defaults without the ids named and that rule after them, or the
+        // setting's own JSON for anything else
+        let value = v;
+        if (k === 'window-rules' && typeof v === 'object')
+            value = JSON.stringify([...JSON.parse(shell(`defaultRules(${q(v.without ?? [])})`)), ...(v.plus ? JSON.parse(ruleFor(v.plus)) : [])]);
+        else if (k === 'window-rules' && !v.startsWith('['))
+            value = ruleFor(v);
+        shell(`set(${q(k)}, ${q(value)})`);
+    }
     given.workspaces.forEach((ws, i) => {
         if (i > 0) { shell(`activate(${state().n - 1})`); settle(500); }
         if (ws.full) {
