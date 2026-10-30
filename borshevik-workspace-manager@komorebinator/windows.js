@@ -308,11 +308,10 @@ export class WindowTracker {
         target.activate(global.get_current_time());
     }
 
+    // the last workspace or one the '+' was dropped into: GNOME keeps no other empty one
     _onActiveWorkspaceChanged() {
         if (!this._settings.get_boolean('overview-on-last-workspace') || Main.overview.visible) return;
-        const manager = global.workspace_manager;
-        if (manager.get_active_workspace_index() !== manager.get_n_workspaces() - 1) return;
-        const ws = manager.get_active_workspace();
+        const ws = global.workspace_manager.get_active_workspace();
         if (!ws.list_windows().some(w => !w.is_on_all_workspaces() && this.isRelevant(w))) Main.overview.show();
     }
 

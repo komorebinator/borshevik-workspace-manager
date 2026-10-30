@@ -94,8 +94,8 @@ msgstr "(нет условий)"
 msgid "(no actions)"
 msgstr "(нет действий)"
 
-msgid "Open overview on last workspace"
-msgstr "Открывать обзор на последнем рабочем столе"
+msgid "Open overview on empty workspace"
+msgstr "Открывать обзор на пустом рабочем столе"
 
 msgid "Debug logging"
 msgstr "Отладочные логи"

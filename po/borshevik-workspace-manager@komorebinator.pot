@@ -124,7 +124,7 @@ msgid "(no actions)"
 msgstr ""
 
 #: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:79
-msgid "Open overview on last workspace"
+msgid "Open overview on empty workspace"
 msgstr ""
 
 #: /var/home/komorebi/Projects/uBlue/borshevik-workspace-manager/borshevik-workspace-manager@komorebinator/prefs.js:118

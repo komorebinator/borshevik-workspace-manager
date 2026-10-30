@@ -81,7 +81,7 @@ export default class Preferences extends ExtensionPreferences {
             to.add(row);
         };
 
-        addToggle(_('Open overview on last workspace'), 'overview-on-last-workspace');
+        addToggle(_('Open overview on empty workspace'), 'overview-on-last-workspace');
 
         // on-empty-workspace combo
         const emptyWsKeys   = ['prev', 'overview', 'nothing'];
