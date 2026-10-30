@@ -13,8 +13,8 @@
     </key>
     <key name="overview-on-last-workspace" type="b">
       <default>true</default>
-      <summary>Open overview when switching to the last workspace</summary>
-      <description>Automatically opens the GNOME overview when the active workspace becomes the last (empty) one.</description>
+      <summary>Open overview when switching to an empty workspace</summary>
+      <description>Automatically opens the GNOME overview when the active workspace is an empty one: the last, or one made by dragging the + between two workspaces.</description>
     </key>
     <key name="float-sizes" type="s">
       <default>'{}'</default>

@@ -876,6 +876,16 @@ export const scenarios = [
         when: ['activate', 'last'],
         then: { check: h => h.overview ? null : 'the overview did not open' },
     },
+    {
+        id: 'emptied-workspace#plus-into-gap',
+        skip: { planner: 'the overview is not the planner\'s' },
+        given: { workspaces: [{ floating: ['A'] }, { floating: ['B'] }], active: 0, settings: { 'overview-on-last-workspace': true } },
+        when: ['dragWs', 'plus', { between: [0, 1] }],
+        then: {
+            workspaces: [{ floating: ['A'] }, {}, { floating: ['B'] }], active: 1,
+            check: h => h.overview ? null : 'the overview did not open',
+        },
+    },
 
     // ── secondary-monitors ─────────────────────────────────────────────────────
     ...['key-tiles', 'edge-drop', 'nothing-arranged'].map(s => ({

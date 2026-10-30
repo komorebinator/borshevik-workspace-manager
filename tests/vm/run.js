@@ -625,9 +625,15 @@ function reset() {
 
 const nameOf = spec => typeof spec === 'string' ? spec : spec.name;
 
+// The settings that move the view by themselves are switched on only once the wall is built: the
+// overview, opened on an empty workspace while building it, would hide new windows' first frames
+// from the extension.
+const VIEW_SETTINGS = ['overview-on-last-workspace', 'on-empty-workspace'];
+
 function build(given) {
     if (given.focusMode) shell(`focusMode(${q(given.focusMode)})`);
-    for (const [k, v] of Object.entries(given.settings ?? {})) {
+    const settings = Object.entries(given.settings ?? {});
+    for (const [k, v] of settings.filter(([k]) => !VIEW_SETTINGS.includes(k))) {
         // window-rules: 'kind:Class' for a rule of one kind on one test window, { without, plus }
         // for the schema's defaults without the ids named and that rule after them, or the
         // setting's own JSON for anything else
@@ -658,6 +664,7 @@ function build(given) {
         }
     });
     shell(`activate(${wsIndex(given.active ?? 0, state())})`);
+    for (const [k, v] of settings.filter(([k]) => VIEW_SETTINGS.includes(k))) shell(`set(${q(k)}, ${q(v)})`);
     return settle();
 }
 
