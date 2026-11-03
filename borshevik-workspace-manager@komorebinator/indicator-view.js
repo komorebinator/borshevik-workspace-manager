@@ -66,7 +66,7 @@ export class IndicatorView {
         const btn = new St.Button({ style_class: 'bwm-logo-btn', reactive: true, y_align: Clutter.ActorAlign.FILL });
         btn.set_y_expand(true);
         const icon = new St.Icon({
-            gicon: Gio.icon_new_for_string(`${path}/bwm_icon.svg`), icon_size: ICON_PX,
+            gicon: Gio.icon_new_for_string(`${path}/bwm-symbolic.svg`), icon_size: ICON_PX,
             y_align: Clutter.ActorAlign.CENTER, opacity: INACTIVE_OPACITY,
         });
         this._logoBg = new St.Bin({ style_class: 'bwm-logo-bg', child: icon });

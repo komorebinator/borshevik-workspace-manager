@@ -538,8 +538,8 @@ components:
     type: "@Graphic"
     format: SVG
     role: app-icon
-    src: borshevik-workspace-manager@komorebinator/bwm_icon.svg
-    description: The logo on the panel indicator's first button.
+    src: borshevik-workspace-manager@komorebinator/bwm-symbolic.svg
+    description: The logo on the panel indicator's first button. A symbolic icon — the file name ending in -symbolic.svg is what makes GNOME Shell treat it as one — so the shell draws it in the panel's text colour like the status icons beside it, dark on a light panel and light on a dark one. Until 2026-11-03 it was bwm_icon.svg, drawn in white, which stayed white on the light panel of GNOME's light variant and of Borshevik Glass.
   - id: stylesheet
     type: "@ConfigFile"
     format: CSS (GNOME Shell St theming)
