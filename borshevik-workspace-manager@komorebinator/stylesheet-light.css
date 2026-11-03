@@ -1,0 +1,184 @@
+/* The light variant: the dark look with its colours turned over. Sizes and spacing
+   come from stylesheet-dark.css; here only colours, in GNOME's light text colour
+   #222226 where the dark variant has white, and the rules overlay light like the
+   shell's other dialogs in its light variant. */
+
+@import url("stylesheet-dark.css");
+
+/* ── Panel indicator ─────────────────────────────────────────────────────── */
+
+.bwm-logo-btn:hover .bwm-logo-bg,
+.bwm-logo-active {
+    background-color: rgba(34, 34, 38, 0.15);
+}
+
+.bwm-ws:hover .bwm-ws-bg {
+    background-color: rgba(34, 34, 38, 0.1);
+}
+
+.bwm-ws-active {
+    background-color: rgba(34, 34, 38, 0.15);
+}
+
+.bwm-ws-active:hover {
+    background-color: rgba(34, 34, 38, 0.3);
+}
+
+.bwm-ws-dragged {
+    border: 2px solid rgba(34, 34, 38, 0.15);
+    background-color: rgba(34, 34, 38, 0.15);
+}
+
+/* ── Rules overlay ───────────────────────────────────────────────────────── */
+
+.bwm-rules-overlay {
+    background-color: #fafafb;
+    border: 1px solid rgba(34, 34, 38, 0.12);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+}
+
+.bwm-rules-header {
+    border-bottom: 1px solid rgba(34, 34, 38, 0.1);
+}
+
+.bwm-rules-title {
+    color: #222226;
+}
+
+.bwm-rules-tab {
+    color: rgba(34, 34, 38, 0.6);
+}
+
+.bwm-rules-tab:hover {
+    background-color: rgba(34, 34, 38, 0.08);
+    color: #222226;
+}
+
+.bwm-rules-tab-active {
+    background-color: rgba(34, 34, 38, 0.12);
+    color: #222226;
+}
+
+.bwm-rules-close {
+    color: rgba(34, 34, 38, 0.6);
+}
+
+.bwm-rules-close:hover {
+    background-color: rgba(34, 34, 38, 0.12);
+    color: #222226;
+}
+
+.bwm-rules-separator {
+    background-color: rgba(34, 34, 38, 0.08);
+}
+
+.bwm-rules-empty {
+    color: rgba(34, 34, 38, 0.45);
+}
+
+/* ── Window sections ─────────────────────────────────────────────────────── */
+
+.bwm-rules-section {
+    background-color: rgba(34, 34, 38, 0.04);
+}
+
+.bwm-rules-win-class {
+    color: #222226;
+}
+
+.bwm-rules-win-title {
+    color: rgba(34, 34, 38, 0.55);
+}
+
+.bwm-rules-new-btn {
+    color: rgba(34, 34, 38, 0.55);
+}
+
+.bwm-rules-new-btn:hover {
+    background-color: rgba(34, 34, 38, 0.08);
+    color: #222226;
+}
+
+/* ── Rule rows ───────────────────────────────────────────────────────────── */
+
+.bwm-rules-rule-row {
+    background-color: rgba(255, 255, 255, 0.7);
+    border: 1px solid rgba(34, 34, 38, 0.1);
+}
+
+.bwm-rules-summary-row:hover {
+    background-color: rgba(34, 34, 38, 0.05);
+}
+
+.bwm-rules-summary-text {
+    color: rgba(34, 34, 38, 0.8);
+}
+
+.bwm-rules-chevron {
+    color: rgba(34, 34, 38, 0.45);
+}
+
+.bwm-rules-detail {
+    border-top: 1px solid rgba(34, 34, 38, 0.1);
+}
+
+/* ── Editor rows ─────────────────────────────────────────────────────────── */
+
+.bwm-rules-section-label {
+    color: rgba(34, 34, 38, 0.45);
+}
+
+.bwm-rules-row-label {
+    color: rgba(34, 34, 38, 0.8);
+}
+
+.bwm-rules-entry,
+.bwm-rules-geom-entry {
+    background-color: rgba(255, 255, 255, 0.9);
+    border: 1px solid rgba(34, 34, 38, 0.2);
+    color: #222226;
+}
+
+.bwm-entry-error {
+    border: 1px solid rgba(192, 28, 40, 0.8);
+}
+
+.bwm-rules-geom-label {
+    color: rgba(34, 34, 38, 0.55);
+}
+
+/* ── Toggle buttons ──────────────────────────────────────────────────────── */
+
+.bwm-toggle {
+    background-color: rgba(34, 34, 38, 0.06);
+    color: rgba(34, 34, 38, 0.5);
+}
+
+.bwm-toggle-on {
+    background-color: rgba(34, 34, 38, 0.03);
+}
+
+/* ── Buttons row ─────────────────────────────────────────────────────────── */
+
+.bwm-rules-save-btn:insensitive {
+    background-color: rgba(34, 34, 38, 0.06);
+    color: rgba(34, 34, 38, 0.35);
+}
+
+.bwm-rules-cancel-btn {
+    background-color: rgba(34, 34, 38, 0.06);
+    color: rgba(34, 34, 38, 0.75);
+}
+
+.bwm-rules-cancel-btn:hover {
+    background-color: rgba(34, 34, 38, 0.12);
+}
+
+.bwm-rules-del-btn {
+    background-color: rgba(192, 28, 40, 0.12);
+    color: #c01c28;
+}
+
+.bwm-rules-del-btn:hover {
+    background-color: rgba(192, 28, 40, 0.22);
+}

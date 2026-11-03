@@ -543,8 +543,10 @@ components:
   - id: stylesheet
     type: "@ConfigFile"
     format: CSS (GNOME Shell St theming)
-    src: borshevik-workspace-manager@komorebinator/stylesheet.css
-    description: "Styles of the panel indicator and the rules overlay, loaded by GNOME Shell with the extension. Active and primary controls follow the user's accent colour; the snap preview reuses GNOME's own tile-preview style for the same reason."
+    src:
+      - borshevik-workspace-manager@komorebinator/stylesheet-dark.css
+      - borshevik-workspace-manager@komorebinator/stylesheet-light.css
+    description: "Styles of the panel indicator and the rules overlay, in a dark and a light variant: GNOME Shell loads stylesheet-dark.css or stylesheet-light.css for the variant it is drawn in (Main.getStyleVariant) and swaps them by itself when it changes, so the indicator matches the panel it sits on and the overlay the shell's other dialogs — GNOME's own light variant, or Borshevik Glass with dark style off, which makes the shell light. The dark file is the whole look; the light one imports it and overrides only colours — the indicator's hover, active and dragged backgrounds and outline in the panel's dark text colour instead of white, the overlay light with dark text — so sizes and spacing are written once. Until 2026-11-03 there was one stylesheet.css, white on the light panel. Active and primary controls follow the user's accent colour; the snap preview reuses GNOME's own tile-preview style for the same reason."
   - id: translations
     type: "@ConfigFile"
     format: gettext (.pot template, .po per-locale, compiled .mo)

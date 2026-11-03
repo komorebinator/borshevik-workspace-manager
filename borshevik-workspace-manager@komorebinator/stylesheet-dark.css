@@ -1,3 +1,6 @@
+/* The dark variant, and the whole look: stylesheet-light.css imports this file and
+   overrides only colours. GNOME Shell loads whichever matches the variant it is drawn in. */
+
 .bwm-indicator {
     spacing: 2px;
 }
