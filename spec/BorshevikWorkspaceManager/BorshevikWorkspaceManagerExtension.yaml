@@ -466,7 +466,9 @@ components:
           - id: buttons
             description: "The buttons in the order shown, for workspace-drag: each with its actor, its background, which a drag clones, its workspace, and whether it is the '+'."
           - id: _setActive
-            description: "The active workspace's button opaque, with the active background, its icons in colour; any other at 80% and greyed. The grey is one Clutter.DesaturateEffect on the button's row, switched on and off, not one made anew for each icon of each button at every change: each effect draws its actor through a buffer of its own at every paint of the panel."
+            description: "The active workspace's button opaque, with the active background, its icons in colour; any other at 80% and greyed, and on a light panel the grey darkened (_readDim). The grey is one Clutter.DesaturateEffect on the button's row, switched on and off, not one made anew for each icon of each button at every change: each effect draws its actor through a buffer of its own at every paint of the panel. The darkening is a second one, a Clutter.BrightnessContrastEffect on the same row, switched on only for an inactive button while the stylesheet asks for it — never in the dark variant, which pays nothing for it."
+          - id: _readDim
+            description: "Reads how much to darken an inactive button's grey from its row's style — -bwm-inactive-brightness and -bwm-inactive-contrast on .bwm-ws-row, which only stylesheet-light.css sets — whenever the row's style changes, which includes GNOME Shell swapping the stylesheet for the other variant. Desaturated, an app's icon is a mid or light grey, which a dark panel shows plainly and a light one all but hides (the author saw it, 2026-11-04); the light variant darkens it instead of giving up the grey, so an inactive workspace still reads as one. The amount lives in the stylesheet, beside the light variant's other colours."
           - id: _setIcons
             description: "Puts the entry's icons in the row, or the '+': an app's icon is taken over from the button's own before one is made (create_icon_texture), so a window come or gone makes one icon, not the row's; the icons left over are destroyed."
           - id: setOverview
@@ -546,7 +548,7 @@ components:
     src:
       - borshevik-workspace-manager@komorebinator/stylesheet-dark.css
       - borshevik-workspace-manager@komorebinator/stylesheet-light.css
-    description: "Styles of the panel indicator and the rules overlay, in a dark and a light variant: GNOME Shell loads stylesheet-dark.css or stylesheet-light.css for the variant it is drawn in (Main.getStyleVariant) and swaps them by itself when it changes, so the indicator matches the panel it sits on and the overlay the shell's other dialogs — GNOME's own light variant, or Borshevik Glass with dark style off, which makes the shell light. The dark file is the whole look; the light one imports it and overrides only colours — the indicator's hover, active and dragged backgrounds and outline in the panel's dark text colour instead of white, the overlay light with dark text — so sizes and spacing are written once. Until 2026-11-03 there was one stylesheet.css, white on the light panel. Active and primary controls follow the user's accent colour; the snap preview reuses GNOME's own tile-preview style for the same reason."
+    description: "Styles of the panel indicator and the rules overlay, in a dark and a light variant: GNOME Shell loads stylesheet-dark.css or stylesheet-light.css for the variant it is drawn in (Main.getStyleVariant) and swaps them by itself when it changes, so the indicator matches the panel it sits on and the overlay the shell's other dialogs — GNOME's own light variant, or Borshevik Glass with dark style off, which makes the shell light. The dark file is the whole look; the light one imports it and overrides only colours — the indicator's hover, active and dragged backgrounds and outline in the panel's dark text colour instead of white, the darkening of inactive workspaces' grey icons (indicator-view#_readDim), the overlay light with dark text — so sizes and spacing are written once. Until 2026-11-03 there was one stylesheet.css, white on the light panel. Active and primary controls follow the user's accent colour; the snap preview reuses GNOME's own tile-preview style for the same reason."
   - id: translations
     type: "@ConfigFile"
     format: gettext (.pot template, .po per-locale, compiled .mo)
@@ -662,6 +664,7 @@ tests:
       - behaviour#android-windows#back-to-floating
       - behaviour#window-rules
       - behaviour#indicator#icons-follow-window
+      - behaviour#indicator#grey-on-light-panel
       - behaviour#indicator#drag-between
       - behaviour#indicator#drop-away-cancels
       - behaviour#indicator#plus-into-gap
@@ -1220,6 +1223,10 @@ behaviour:
         given: Three workspaces holding A, then B and C, then D, the view on the first
         when: The user switches to the second
         then: "The second button is the active one and the buttons show one, two and one icons, and no button or icon was built for it: the switch changed the state of the two buttons concerned"
+      - id: grey-on-light-panel
+        given: Two workspaces holding A and B, the view on the first, GNOME Shell dark
+        when: GNOME Shell turns light — dark style off under Borshevik Glass, or prefer-light
+        then: B's button, the inactive one, has its grey icons darkened so they stand out from the light panel, and A's keeps its icons in colour; on the dark panel neither was darkened
       - id: drag-between
         given: Four workspaces, holding A, B, C and D in that order, the view on the first
         when: The user drags the first workspace's button and drops it between the third and the fourth

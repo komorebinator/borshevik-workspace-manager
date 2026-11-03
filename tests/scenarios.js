@@ -35,6 +35,7 @@
 // turned off and on, ['dragWs', index | 'plus', { between: [i, j] } | 'away'] — a workspace's
 // button dragged in the indicator; Chrome's and Android's own: 'openMany', 'chromeQuit',
 // 'chromeRestore', 'dragTab', 'android', 'androidFull', 'androidFloat', 'androidTheme';
+// ['shellScheme', 'light' | 'dark'] — GNOME Shell's colour scheme set to prefer-light or prefer-dark;
 // ['wait', null, seconds] — the user does nothing, ['resizeCorner', name, [dw, dh]] — a floating
 // window's bottom right corner dragged by shares of the work area, ['churn', null, n] — n windows
 // opened and closed one after another, every other one maximized, ['addRemoveWorkspace'] — a
@@ -1263,6 +1264,21 @@ export const scenarios = [
                 if (icons !== '1,2,1') return `the buttons show ${icons} icons, not 1,2,1`;
                 const built = h.perf.other.filter(o => o.name.startsWith('indicator:'));
                 return built.length ? `switching built ${built.map(o => `${o.n} ${o.name.slice(11)}`).join(', ')}` : null;
+            },
+        },
+        skip: { planner: 'the indicator is not the planner\'s' },
+    },
+    {
+        id: 'indicator#grey-on-light-panel',
+        given: { workspaces: [{ floating: ['A'] }, { floating: ['B'] }], active: 0 },
+        when: ['shellScheme', 'light'],
+        then: {
+            active: 0,
+            check: h => {
+                const dimmed = p => p.filter(b => !b.plus).map(b => b.dimmed).join(',');
+                if (dimmed(h.before.panel) !== 'false,false') return `on the dark panel the buttons are dimmed ${dimmed(h.before.panel)}`;
+                return dimmed(h.panel) === 'false,true' ? null
+                    : `on the light panel the buttons are dimmed ${dimmed(h.panel)}, not only the inactive one`;
             },
         },
         skip: { planner: 'the indicator is not the planner\'s' },

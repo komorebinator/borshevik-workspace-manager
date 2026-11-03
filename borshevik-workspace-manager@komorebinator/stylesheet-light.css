@@ -29,6 +29,12 @@
     background-color: rgba(34, 34, 38, 0.15);
 }
 
+/* an inactive workspace's grey icons darkened, so they stand out from a light panel */
+.bwm-ws-row {
+    -bwm-inactive-brightness: -0.4;
+    -bwm-inactive-contrast: 0;
+}
+
 /* ── Rules overlay ───────────────────────────────────────────────────────── */
 
 .bwm-rules-overlay {

@@ -88,9 +88,14 @@ export class IndicatorView {
         // through a buffer of its own at every paint of the panel
         const grey = new Clutter.DesaturateEffect({ factor: 1.0 });
         row.add_effect(grey);
+        // the grey made darker or lighter as the stylesheet says (-bwm-inactive-brightness and
+        // -contrast on .bwm-ws-row): on a light panel grey icons would fade into it
+        const dim = new Clutter.BrightnessContrastEffect({ enabled: false });
+        row.add_effect(dim);
         const bg = new St.Bin({ style_class: 'bwm-ws-bg', child: row });
         actor.set_child(bg);
-        const b = { actor, bg, row, num, grey, ws: entry.ws, plus: false, plusIcon: null, icons: [] };
+        const b = { actor, bg, row, num, grey, dim, dimmed: false, active: false, ws: entry.ws, plus: false, plusIcon: null, icons: [] };
+        row.connect('style-changed', () => this._readDim(b));
         actor.connect('clicked', () => this._onClick(b));
         actor.connect('button-press-event', (_a, event) => this._onPress(b, event));
         this._buttons.set(entry.ws, b);
@@ -113,6 +118,18 @@ export class IndicatorView {
         if (active) b.bg.add_style_class_name('bwm-ws-active');
         else b.bg.remove_style_class_name('bwm-ws-active');
         b.grey.enabled = !active;
+        b.active = active;
+        b.dim.enabled = !active && b.dimmed;
+    }
+
+    _readDim(b) {
+        const node = b.row.get_theme_node();
+        const [, brightness] = node.lookup_double('-bwm-inactive-brightness', false);
+        const [, contrast] = node.lookup_double('-bwm-inactive-contrast', false);
+        b.dim.set_brightness(brightness ?? 0);
+        b.dim.set_contrast(contrast ?? 0);
+        b.dimmed = !!(brightness || contrast);
+        b.dim.enabled = !b.active && b.dimmed;
     }
 
     // An app's icon is taken over from the button's own before one is made: a window gone or come

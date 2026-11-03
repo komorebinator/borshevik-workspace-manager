@@ -54,6 +54,9 @@ function shellHelper(Main) {
                 num: Number(all.find(c => c.has_style_class_name?.('bwm-ws-num'))?.text),
                 icons: all.filter(c => c.has_style_class_name?.('bwm-app-icon')).length,
                 plus: all.some(c => c.has_style_class_name?.('bwm-ws-plus')),
+                // whether its grey icons are darkened, as on a light panel
+                dimmed: all.find(c => c.has_style_class_name?.('bwm-ws-row'))?.get_effects()
+                    .some(e => e.constructor.name.includes('BrightnessContrastEffect') && e.enabled && e.get_brightness()[0] < 0) ?? false,
                 x: Math.round(x), y: Math.round(y), w: Math.round(b.width), h: Math.round(b.height),
             };
         });
@@ -408,6 +411,13 @@ function act(action) {
         sleep(1500);   // Android's own release waits ANDROID_REPLACE_MS before acting
         break;
     }
+    case 'shellScheme':
+        // GNOME Shell's own variant: prefer-light makes the shell light with or without
+        // Borshevik Glass, which reset() puts back to the image's default
+        vm('ssh', `uid=$(id -u tester); runuser -u tester -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus gsettings set org.gnome.desktop.interface color-scheme prefer-${name}`);
+        schemeChanged = true;
+        sleep(1500);
+        break;
     case 'androidTheme':
         vm('droid', 'cmd', 'uimode', 'night', name === 'dark' ? 'yes' : 'no');
         sleep(1500);
@@ -598,8 +608,15 @@ const ruleFor = spec => {
 
 const TEST_SETTINGS = { 'overview-on-last-workspace': false, 'on-empty-workspace': 'nothing', 'float-sizes': '{}' };
 
+let schemeChanged = false;
+
 function reset() {
     leaveOverview();
+    if (schemeChanged) {
+        vm('ssh', 'uid=$(id -u tester); runuser -u tester -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus gsettings reset org.gnome.desktop.interface color-scheme');
+        schemeChanged = false;
+        sleep(1500);
+    }
     // a quit Chrome can tell from a crash, so it offers no restore on the next start
     vm('ssh', 'pkill -TERM -u tester -x chrome; for i in $(seq 20); do pgrep -u tester -x chrome >/dev/null || break; sleep 0.5; done; pkill -KILL -u tester -x chrome; true');
     if (shell('hasAndroid()') === 'true') {
