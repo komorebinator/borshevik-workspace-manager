@@ -15,7 +15,7 @@ platform: GJS (GNOME Shell 49/50) — Clutter, GLib, Meta, Shell, St, Gio
 src: borshevik-workspace-manager@komorebinator/extension.js
 components:
   - id: log
-    type: "@Module"
+    type: "JavaScript module of functions, holding no state"
     src: borshevik-workspace-manager@komorebinator/log.js
     description: "The debug log every module writes to (see the logging guideline): LOG, a no-op or a console.log prefixed '[BWM]'; setLogging, which the extension calls with the debug-logging setting, live; logging, whether it is on, so that dispatch builds its long plan log (logPlan) only then; and name, the way the log names a window."
     functions:
@@ -26,9 +26,13 @@ components:
       - id: logging
         description: Whether the log is on.
       - id: name
-        description: "A window as the log names it: its class and Mutter's id, `google-chrome#147594777`. By class alone two windows of one app could not be told apart: a Chrome window of the author's sent on past its home could not be told from the two others Chrome had restored, until the log named each (2026-10-18)."
+        description: "A window as the log names it: its class and Mutter's id, `google-chrome#147594777`. By class alone two windows of one app could not be told apart (decisions#name-each)."
+        decisions:
+          - id: name-each
+            description: "The log names each window, not only its class: a Chrome window of the author's sent on past its home could not be told from the two others Chrome had restored until it did."
+            date: 2026-10-18
   - id: perf
-    type: "@Module"
+    type: "JavaScript module of functions, holding no state"
     src: borshevik-workspace-manager@komorebinator/perf.js
     description: "The performance report (see the guideline on measuring): how often each signal handler, later and timer of the extension runs and how long it takes, how long each intent spends in dispatch and each of its stages — snapshot, plan, execute — which intents were queued and from where, which plans came out empty, which operations were carried out, the busiest windows by intents and operations, and how much the extension holds now — records, handlers, Android's states, intents waiting. It only counts and times, and judges nothing: no thresholds, no warnings; the numbers are read by the author, by Claude and by the tests (behaviour#quiet). Collected while the perf-log setting is on, from the moment it was switched on or the report last reset; off, a measured point costs one check of a flag. Times are taken with GLib.get_monotonic_time and include whatever a measured point calls, other measured points among them. Imports nothing of GNOME Shell's, so preferences, another process, format the report with it too."
     functions:
@@ -53,9 +57,9 @@ components:
       - id: formatReport
         description: "The report as text, for preferences' Copy and tests/vm.sh perf: one table per kind of measured point — calls, calls per minute, total and longest time, intents caused — then the intents, empty plans, operations, busiest windows and sizes."
   - id: workspaces
-    type: "@Module"
+    type: "JavaScript module of functions, holding no state"
     src: borshevik-workspace-manager@komorebinator/workspaces.js
-    description: "Telling the workspaces GNOME still has from those it has removed. A removed workspace lives on as an object for as long as something holds it — a home, an Android window's origin, a handler — and index() on it returns -1 but fails Mutter's assertion, a critical in the journal each time (`meta_workspace_index: assertion 'ret >= 0' failed`, seen in the test machine, 2026-10-20); every check of whether a workspace is still there goes through isLive instead."
+    description: "Telling the workspaces GNOME still has from those it has removed. A removed workspace lives on as an object for as long as something holds it — a home, an Android window's origin, a handler — and index() on it returns -1 but fails Mutter's assertion, a critical in the journal each time (`meta_workspace_index: assertion 'ret >= 0' failed`, decisions#is-live); every check of whether a workspace is still there goes through isLive instead."
     functions:
       - id: liveWorkspaces
         description: The workspaces GNOME has now, as a set.
@@ -65,8 +69,13 @@ components:
         description: "A workspace's index, or -1 once removed — for the log above all, whose arguments are worked out even while it is off."
       - id: dropRemovedWorkspaces
         description: "A list of [workspace, handler id] with the handlers of removed workspaces disconnected and dropped, for windows and indicator at every workspace-removed: kept, they piled up for as long as the extension was on."
+    decisions:
+      - id: is-live
+        description: Whether a workspace is still there is asked of isLive, never of index().
+        upstream: "Mutter: index() on a removed workspace returns -1 but fails `meta_workspace_index: assertion 'ret >= 0' failed`, a critical in the journal each time — seen in the test machine"
+        date: 2026-10-20
   - id: registry
-    type: "@Singleton"
+    type: "JavaScript module holding state of its own"
     src: borshevik-workspace-manager@komorebinator/registry.js
     description: The extension's record of every window it manages and every window a rule leaves alone. A window is managed exactly when it has a record. Owned by the extension and cleared on disable (see the guidelines on state); read by snapshot#take, written by the adapters when windows come and go and by executor as it acts.
     fields:
@@ -78,7 +87,14 @@ components:
         description: "Relevant windows a rule leaves alone (rules#isIgnored), or Android windows while they float (android#_check): never placed, tiled, moved or maximized, yet still relevant — the indicator shows them and an emptied workspace counts them."
       - id: record
         type: plain object
-        description: "What the extension knows about one window that the window itself does not say. `role`: 'floating' | 'tiled-left' | 'tiled-right' | 'full' — the single source of truth for which role the window has. `preFull`: the role to go back to when it stops being full. `home`: {ws, kind: 'with-user' | 'displaced', slot, seq} or null — the workspace it was moved off, why (behaviour#going-home, behaviour#displacement), the slot it held and, for a displaced one, a number that grows with every displacement, so the most recent one returns first. `floatRect`: {x, y, width, height}, its floating geometry — written only from manual actions (an explicit tile, a drop) or while it floats undisturbed, never on a path the extension took by itself: some apps, Mission Center among them, open at the size they were last tiled at, and capturing on an automatic path recorded a tile's size as the user's float size — and, through float-sizes, for the whole app; this happened once already, when the capture sat in code both kinds of path ran. `minimizedFrom`: {ws, slot} while minimized (behaviour#minimize). `lastWs`, `lastMonitor`: where it was last placed — written by executor before it moves the window, so the workspace-changed that follows matches and is an echo, and read instead of the live accessors once the window is unmanaging, when get_monitor() already returns -1. `tileRect`: the rect executor last gave the window as a tile — what the snapshot reads for a tile instead of its live rect, since an app takes a moment to accept a new size, and a plan made from a live rect read meanwhile undid the tile it had just made (seen in the test machine, 2026-10-18: every tile went back to its float width at the recheck that followed it). A hand resize and a window settling wider than asked report their real width (drag#_onGrabEnd, executor#_applyGeometry), which then becomes the tileRect. `placed`: false while the window waits for its own opened intent (windows#register) — the snapshot leaves it out of every plan but its own opened one, since a plan made meanwhile counted a maximized window not yet placed and moved a floating one out of its way (seen in the test machine, 2026-10-18). `pendingRect`: the rect executor gave a window just brought out of maximize, until it takes it at its next size (executor#_applyGeometry) — what the snapshot reads for it meanwhile. `ownWsRule`: the id of the own-workspace rule it matches (rules#ownWorkspaceRule), or null. `rules`: Set of the ids of the rules that matched it, shown by rules-ui and used to gather the windows of an own-workspace rule."
+        description: "What the extension knows about one window that the window itself does not say. `role`: 'floating' | 'tiled-left' | 'tiled-right' | 'full' — the single source of truth for which role the window has. `preFull`: the role to go back to when it stops being full. `home`: {ws, kind: 'with-user' | 'displaced', slot, seq} or null — the workspace it was moved off, why (behaviour#going-home, behaviour#displacement), the slot it held and, for a displaced one, a number that grows with every displacement, so the most recent one returns first. `floatRect`: {x, y, width, height}, its floating geometry — written only from manual actions (an explicit tile, a drop) or while it floats undisturbed, never on a path the extension took by itself: some apps, Mission Center among them, open at the size they were last tiled at, and capturing on an automatic path recorded a tile's size as the user's float size — and, through float-sizes, for the whole app; this happened once already, when the capture sat in code both kinds of path ran. `minimizedFrom`: {ws, slot} while minimized (behaviour#minimize). `lastWs`, `lastMonitor`: where it was last placed — written by executor before it moves the window, so the workspace-changed that follows matches and is an echo, and read instead of the live accessors once the window is unmanaging, when get_monitor() already returns -1. `tileRect`: the rect executor last gave the window as a tile — what the snapshot reads for a tile instead of its live rect, since an app takes a moment to accept a new size, and a plan made from a live rect read meanwhile undid the tile it had just made (decisions#tile-rect). A hand resize and a window settling wider than asked report their real width (drag#_onGrabEnd, executor#_applyGeometry), which then becomes the tileRect. `placed`: false while the window waits for its own opened intent (windows#register) — the snapshot leaves it out of every plan but its own opened one, since a plan made meanwhile counted a maximized window not yet placed and moved a floating one out of its way (decisions#placed). `pendingRect`: the rect executor gave a window just brought out of maximize, until it takes it at its next size (executor#_applyGeometry) — what the snapshot reads for it meanwhile. `ownWsRule`: the id of the own-workspace rule it matches (rules#ownWorkspaceRule), or null. `rules`: Set of the ids of the rules that matched it, shown by rules-ui and used to gather the windows of an own-workspace rule."
+        decisions:
+          - id: tile-rect
+            description: "A tile is read from `tileRect`, not its live rect. Seen in the test machine with the live rect: every tile went back to its float width at the recheck that followed it."
+            date: 2026-10-18
+          - id: placed
+            description: A window not yet `placed` is left out of every plan but its own opened one — seen in the test machine without it.
+            date: 2026-10-18
     functions:
       - id: get
         description: The record of a window, or undefined when the extension does not manage it.
@@ -97,7 +113,7 @@ components:
       - id: clear
         description: Forgets everything, on disable.
   - id: planner
-    type: "@Module"
+    type: "JavaScript module of functions, holding no state"
     src: borshevik-workspace-manager@komorebinator/planner.js
     description: "Every decision about where a window goes, as pure functions: a snapshot of the primary monitor's wall and an intent in, a plan out. It keeps `behaviour` — each function names the behaviours it decides — and imports nothing from `gi://`: workspaces and windows reach it as opaque references it compares but never calls, so it runs under plain gjs, and the scenarios can be checked against it without a GNOME Shell (tests#planner-scenarios). It works on a copy of the snapshot, changing it as it decides, so that each later decision in the same plan sees the wall as the earlier ones left it."
     fields:
@@ -157,20 +173,26 @@ components:
       - id: _relayout
         description: "Brings the tiles of a workspace back to the work area after it changed — resolution, scale, a monitor, the panel (a recheck with relayout): same width, the slot's edge and full height. Only then: a recheck after a click or a plan does not relayout, since a tile whose app has not yet taken its new size would be laid out from where it was. Roles are not judged again (behaviour#role-by-size#not-judged-again)."
       - id: setTile
-        description: "Makes a window a tile on a side at a width, never narrower than its smallest width (planner#Snapshot's minWidth): asked for less, an app keeps its smallest width and the two tiles overlap. A partner that would then overlap gives up just as much, down to its own smallest width, and past that the window itself gives way (behaviour#two-slots#narrow-remainder). The smallest width is the one the app declares, read before anything is asked of it, where it was once found by watching a tile settle wider than asked: a watch that took the hand's resize and apps' late sizes for settled widths, and twice ended in two apps resizing each other without end (2026-10-19)."
+        description: "Makes a window a tile on a side at a width, never narrower than its smallest width (planner#Snapshot's minWidth): asked for less, an app keeps its smallest width and the two tiles overlap. A partner that would then overlap gives up just as much, down to its own smallest width, and past that the window itself gives way (behaviour#two-slots#narrow-remainder). The smallest width is the one the app declares, read before anything is asked of it (decisions#declared-width)."
+        decisions:
+          - id: declared-width
+            description: A tile's smallest width is the one the app declares.
+            rejected:
+              - watching a tile settle wider than asked — took the hand's resize and apps' late sizes for settled widths, and twice ended in two apps resizing each other without end
+            date: 2026-10-19
       - id: tiles
         description: The windows in a workspace's two slots, read from their roles, leaving out the window being placed. A window being placed still has its old role — a restored one the slot another took meanwhile, a moved one the side it had where it came from — and when two windows had one role, which of them counted as the occupant depended on the order they were registered in (behaviour#minimize#restore-displaces-returned).
       - id: onScreen
         description: "A window's own float geometry as it floats again, shifted — and shrunk if it is larger than the work area — to lie wholly inside the work area. The geometry is kept at the moment a floating window stops floating, and that moment can find it partly off the screen: a drop at an edge leaves it pushed against the edge by the pointer, and a screen may have changed since. Shifting it there, rather than keeping the geometry from before the drag, keeps one rule for every way a window floats again (behaviour#two-slots#untile-kept-on-screen). Not applied while a drag holds the window, which floats under the pointer."
   - id: snapshot
-    type: "@Module"
+    type: "JavaScript module of functions, holding no state"
     src: borshevik-workspace-manager@komorebinator/snapshot.js
     description: Builds the planner#Snapshot from the live windows and the registry, fresh for every plan and never cached, so the planner always decides on the wall as it is. Of the primary monitor only, since the wall is that monitor's (behaviour#secondary-monitors).
     functions:
       - id: take
-        description: "The snapshot of the primary monitor's wall: every workspace in order, each with its managed windows on that monitor, their roles and homes from the registry, their frame rects, their stacking order (global.display.sort_windows_by_stacking), and the work area. A workspace's work area is read from the workspace itself, so an empty workspace has one too — the old code skipped empty workspaces as though theirs could not be read; that is to be confirmed, and carried over only if it turns out true. Ignored windows, windows on all workspaces and windows still waiting for their opened intent (`placed` in registry#record) are left out — the last unless the plan is their own opened one. A floating window's floatRect is its live rect, except for a window just opening, whose live rect may be a tile's it opened at: its floatRect is the record's (windows#register). A window's minWidth is the minimum its app declares (xdg_toplevel.set_min_size on Wayland, WM_NORMAL_HINTS on X11), which Mutter keeps in client coordinates, shadows included: get_min_size, less what frame_rect_to_client_rect adds to the frame rect. Read in the test machine on 2026-10-19: Chrome declares 500, Nautilus 360. A window just brought out of maximize is read at its pendingRect, where it was put, until it takes it."
+        description: "The snapshot of the primary monitor's wall: every workspace in order, each with its managed windows on that monitor, their roles and homes from the registry, their frame rects, their stacking order (global.display.sort_windows_by_stacking), and the work area. A workspace's work area is read from the workspace itself, so an empty workspace has one too — the old code skipped empty workspaces as though theirs could not be read; that is to be confirmed, and carried over only if it turns out true. Ignored windows, windows on all workspaces and windows still waiting for their opened intent (`placed` in registry#record) are left out — the last unless the plan is their own opened one. A floating window's floatRect is its live rect, except for a window just opening, whose live rect may be a tile's it opened at: its floatRect is the record's (windows#register). A window's minWidth is the minimum its app declares (xdg_toplevel.set_min_size on Wayland, WM_NORMAL_HINTS on X11), which Mutter keeps in client coordinates, shadows included: get_min_size, less what frame_rect_to_client_rect adds to the frame rect. Read in the test machine: Chrome declares 500, Nautilus 360. A window just brought out of maximize is read at its pendingRect, where it was put, until it takes it."
   - id: executor
-    type: "@Singleton"
+    type: "JavaScript module holding state of its own"
     src: borshevik-workspace-manager@komorebinator/executor.js
     description: Carries out a planner#Plan through Mutter, one operation at a time, and holds every workaround for the ways Mutter and the apps do not do at once what they are told. Before each operation that changes a window it writes the outcome into the window's registry record (its role, its lastWs), so the signals that follow are recognised as echoes (see the guidelines).
     fields:
@@ -182,12 +204,18 @@ components:
         description: "Per window, the one size-changed handler waiting for its next size (_onNextSize): the rect put back after an unmaximize, or a floating window centred."
     functions:
       - id: run
-        description: "Carries out the operations of a plan in order and then shows the workspace it names, if any, calling `done` once it is all asked of Mutter: nothing waits for a window to take its geometry (_applyGeometry). A failing operation is logged and skipped (see the guidelines). Whether to show a workspace is the planner's, and so is which window to focus there: the workspace is shown with that window focused (activate_with_focus), since showing it alone leaves the focus to GNOME, which, when focus follows the mouse, gives it to whatever is under the pointer or to nothing (behaviour#view-follows-user#focus-goes-along). Nothing else here moves the view. A hold once took the view back to a fullscreen window for 1.5 s after a plan that moved windows off it, against GNOME switching to one of them by itself — a case never confirmed — but it could not tell the user's own swipe from such a switch, took the view back in the middle of the swipe's animation and left GNOME showing one workspace while its overview and indicator stood on another (2026-10-18), so it was removed (behaviour#view-follows-user#user-switches-at-once)."
+        description: "Carries out the operations of a plan in order and then shows the workspace it names, if any, calling `done` once it is all asked of Mutter: nothing waits for a window to take its geometry (_applyGeometry). A failing operation is logged and skipped (see the guidelines). Whether to show a workspace is the planner's, and so is which window to focus there: the workspace is shown with that window focused (activate_with_focus), since showing it alone leaves the focus to GNOME, which, when focus follows the mouse, gives it to whatever is under the pointer or to nothing (behaviour#view-follows-user#focus-goes-along). Nothing else here moves the view. Nothing takes the view back after a plan (decisions#no-hold, behaviour#view-follows-user#user-switches-at-once)."
         arguments:
           - id: plan
             description: planner#Plan
           - id: done
             description: called when the plan is finished
+        decisions:
+          - id: no-hold
+            description: No hold takes the view back to a fullscreen window after a plan that moved windows off it.
+            rejected:
+              - a hold taking the view back for 1.5 s, against GNOME switching to one of the moved windows by itself — a case never confirmed; it could not tell the user's own swipe from such a switch, took the view back in the middle of the swipe's animation and left GNOME showing one workspace while its overview and indicator stood on another
+            date: 2026-10-18
       - id: isMoving
         description: "Whether the executor is moving a window this very moment: window-removed is emitted from inside change_workspace, before anything can be compared, so windows#_onWindowRemoved asks this instead. True only for the duration of that call."
       - id: _newWorkspace
@@ -195,7 +223,13 @@ components:
       - id: _move
         description: Moves a window to a workspace, as an echo-marked change. A window on all workspaces is never moved.
       - id: _unfull
-        description: Brings a window out of maximize or fullscreen before it is given a tile or a floating geometry, with a plain unmaximize or unmake_fullscreen; making a window full is a plain maximize in run. Marks the window so _applyGeometry applies its rect once more on the next size-changed. It once also told GNOME Shell the change was an unmaximize, so that it animated as one, through Main.wm._prepareAnimationInfo — a private function of GNOME Shell, with no promise to stay, which logged `Error in size change accounting` at every use (2026-10-18) — and was dropped for it.
+        description: Brings a window out of maximize or fullscreen before it is given a tile or a floating geometry, with a plain unmaximize or unmake_fullscreen; making a window full is a plain maximize in run. Marks the window so _applyGeometry applies its rect once more on the next size-changed. It does not pass the change off to GNOME Shell as an unmaximize (decisions#no-private-animation).
+        decisions:
+          - id: no-private-animation
+            description: The change is not animated as an unmaximize.
+            rejected:
+              - telling GNOME Shell the change was an unmaximize through Main.wm._prepareAnimationInfo — a private function of GNOME Shell, with no promise to stay, which logged `Error in size change accounting` at every use
+            date: 2026-10-18
       - id: _applyGeometry
         description: "Gives a window a rect: moves it, then resizes it, since some apps ignore the move half of a combined call. After an unmaximize Chrome restores its old position once the new geometry is applied, so the rect is applied again at the window's next size-changed (_onNextSize), applied only while the window still has the role it was given; until then the window is taken to be where it was put (pendingRect in registry#record, read by snapshot#take), so the plan does not wait for it and no plan is made from where it is on its way. The plan once waited up to 2 seconds for that size instead, holding every intent behind it."
       - id: _float
@@ -207,7 +241,7 @@ components:
       - id: _restack
         description: Lowers a window beneath others (a returning tile beneath the guests, behaviour#displacement#returns-under-guests) or raises it above them (a window the user moved, behaviour#user-moves).
   - id: windows
-    type: "@Singleton"
+    type: "JavaScript module holding state of its own"
     src: borshevik-workspace-manager@komorebinator/windows.js
     description: "The adapter between Mutter's window and workspace signals and dispatch: it takes windows under management as they appear, follows what happens to them, drops the echoes of the extension's own actions (see the guidelines) and turns everything else into intents. It decides nothing about placement."
     fields:
@@ -225,7 +259,7 @@ components:
         description: "The recheck queued for the next idle after restacked (_onRestacked): Mutter emits restacked in bursts, and one recheck answers the whole burst. An 80 ms debounce stood here before, a timer with nothing to wait for."
       - id: this._wsHandles
         type: Array<[Meta.Workspace, handler id]>
-        description: "The window-removed handler on every workspace (_onWindowRemoved), connected for each one as GNOME adds it. Those of a workspace GNOME removes are dropped at its workspace-removed (workspaces#dropRemovedWorkspaces): kept until disable, one piled up for every workspace a maximized window had held (found by behaviour#quiet#nothing-left-behind, 2026-10-20)."
+        description: "The window-removed handler on every workspace (_onWindowRemoved), connected for each one as GNOME adds it. Those of a workspace GNOME removes are dropped at its workspace-removed (workspaces#dropRemovedWorkspaces): kept until disable, one piled up for every workspace a maximized window had held (found by behaviour#quiet#nothing-left-behind)."
       - id: this._areas
         type: Map<Meta.Workspace, string>
         description: "The primary monitor's work area each workspace was last laid out for, as `x,y wxh` (_readAreas). A Map pruned at every workspace-removed rather than a WeakMap: a GJS wrapper may be made anew for the same workspace, and a WeakMap would then lose the entry and miss a real change; its size is in the performance report."
@@ -233,13 +267,23 @@ components:
       - id: isRelevant
         description: "Whether the extension manages a window at all: normal windows only, not hidden from the taskbar and not on all workspaces. Dialogs, docks and sticky windows are left alone everywhere — placement, the indicator and rules-ui. Secondary monitors are the exception to the last clause: their windows are on all workspaces when GNOME keeps workspaces on the primary monitor only, and must still get the tiling that replaces GNOME's (drag, behaviour#secondary-monitors)."
       - id: _onWindowCreated
-        description: "Starts managing a new relevant window once it has a size to be judged by: at its first frame, or at its first size-changed with a size, whichever comes first — unless it has been registered meanwhile (a grab on a window never announced, drag#_onGrabBegin), a rule closes it (rules#isClosed), which it then asks to close at the next idle, never managing it, a rule leaves it alone (rules#isIgnored), or it is Android's (android#isAndroid), which goes to android instead. The rules and the Android test are asked then and not at creation because a Wayland client names its app id after its window is created: at creation wm_class is still empty, and a test on class would match nothing — Waydroid's windows slipped through this way. An X11 window has its class and its geometry from its creation and may never change size, so one that already has a size is decided at the next idle after it. Nothing is moved, or closed, from the first-frame handler (see the guidelines). A window that opens on a workspace not being shown draws no frame until it is shown, but it is given a size, so the first size is what takes it under management: Chrome restoring a session sends the view after its first window, and the windows opening behind it were left unmanaged until the user happened to look (both the old code and the first version of this one; seen in the test machine, 2026-10-18). A fixed wait of half a second stood in for that size before, and judged a slow window at 0×0 (behaviour#role-by-size#slow-to-open)."
+        description: "Starts managing a new relevant window once it has a size to be judged by: at its first frame, or at its first size-changed with a size, whichever comes first — unless it has been registered meanwhile (a grab on a window never announced, drag#_onGrabBegin), a rule closes it (rules#isClosed), which it then asks to close at the next idle, never managing it, a rule leaves it alone (rules#isIgnored), or it is Android's (android#isAndroid), which goes to android instead. The rules and the Android test are asked then and not at creation because a Wayland client names its app id after its window is created: at creation wm_class is still empty, and a test on class would match nothing — Waydroid's windows slipped through this way. An X11 window has its class and its geometry from its creation and may never change size, so one that already has a size is decided at the next idle after it. Nothing is moved, or closed, from the first-frame handler (see the guidelines). A window that opens on a workspace not being shown draws no frame until it is shown, but it is given a size, so the first size is what takes it under management: Chrome restoring a session sends the view after its first window, and the windows opening behind it were left unmanaged until the user happened to look (decisions#first-size). A fixed wait of half a second stood in for that size before, and judged a slow window at 0×0 (behaviour#role-by-size#slow-to-open)."
+        decisions:
+          - id: first-size
+            description: A window is taken under management at its first size.
+            rejected:
+              - "its first frame — the windows Chrome restores behind its first were left unmanaged until the user happened to look: the old code and the first version of this one, seen in the test machine"
+            date: 2026-10-18
       - id: register
         description: "Takes a window under management: gives it a record (registry#track) with its role read from Mutter — the one place besides adoptExisting where Mutter's flags stand in for the record — or, at enable, the tile adoptExisting saw it to be, with what it covers as its tileRect; seeds its floatRect from its app's remembered size centred on the work area (_appFloatRect), else from its geometry unless it opened maximized, applies the window rules (rules#apply, deferred), connects its signals once (this._connected), since an Android window can be registered again after being released, and, for a window just opened, dispatches its opened intent at once: each window is placed on its own, as soon as it is ready. Windows opening together — Chrome restoring a session — were once gathered for 150 ms and placed in one plan, a crutch from the old code, where windows placed one by one overlapped or were left on one workspace; the planner places each on the wall the ones before it left (behaviour#role-by-size#session-restore). The app's size comes first because an app may open at the size it was last tiled at (behaviour#two-slots#untile-reopened-tile)."
       - id: _appFloatRect
         description: The float-sizes entry of a window's class as a rect centred on its monitor's work area, or null when its app has none.
       - id: close
-        description: "Asks a window a rule closes (rules#isClosed) to close, at the next idle and only if it is still there, as the close button would — an app may still ask about unsaved work. The window is never registered or ignored, so nothing else counts it meanwhile. The request carries a time read from the display server (get_current_time_roundtrip): outside an event global.get_current_time() is 0, and Mutter, which pings a window it asks to close to see whether it answers, refuses to ping with that (seen 2026-10-18 on the Discover window; it closed all the same)."
+        description: "Asks a window a rule closes (rules#isClosed) to close, at the next idle and only if it is still there, as the close button would — an app may still ask about unsaved work. The window is never registered or ignored, so nothing else counts it meanwhile. The request carries a time read from the display server (get_current_time_roundtrip): outside an event global.get_current_time() is 0, and Mutter, which pings a window it asks to close to see whether it answers, refuses to ping with that (decisions#roundtrip-time)."
+        decisions:
+          - id: roundtrip-time
+            description: "The close request's time is read from the display server. Seen with 0 on the Discover window: Mutter refused to ping it, and it closed all the same."
+            date: 2026-10-18
       - id: ignore
         description: Leaves a relevant window alone (registry#ignore) — a rule says so, or it is a floating Android app — while still following its closing, and applies the window rules' other actions to it at the next idle.
       - id: _onUnmanaged
@@ -259,7 +303,11 @@ components:
       - id: _onRestacked
         description: "After the stacking changed, once for a whole burst of restacked at the next idle (this._restackLater), dispatches recheck for the active workspace: a click that puts a tile above a guest can cover it, and that is a change of the user's, not one any plan made."
       - id: _onWorkAreasChanged
-        description: "After the work area changed — resolution, scale, a monitor, the panel — dispatches recheck with relayout for each workspace whose primary work area is no longer the one remembered (_readAreas), so tiles are laid out on the new area and guests it covers are found. Roles are not judged again (behaviour#role-by-size#not-judged-again). Mutter sends workareas-changed whenever it recomputes the work areas, and it does so for every workspace added or removed, the areas themselves unchanged (seen in the test machine, 2026-10-20): until then every one of them rechecked every workspace for nothing, 69 empty rechecks for 13 workspaces come and gone in two minutes of the author's session (found with perf). The state is what is judged, not the signal (behaviour#quiet#work-area-unchanged)."
+        description: After the work area changed — resolution, scale, a monitor, the panel — dispatches recheck with relayout for each workspace whose primary work area is no longer the one remembered (_readAreas), so tiles are laid out on the new area and guests it covers are found. Roles are not judged again (behaviour#role-by-size#not-judged-again). Mutter sends workareas-changed whenever it recomputes the work areas, and it does so for every workspace added or removed, the areas themselves unchanged (decisions#areas-unchanged). The state is what is judged, not the signal (behaviour#quiet#work-area-unchanged).
+        decisions:
+          - id: areas-unchanged
+            description: "Not every workareas-changed is a change: Mutter sends it for every workspace added or removed, the areas unchanged — seen in the test machine. Until then every one of them rechecked every workspace for nothing, 69 empty rechecks for 13 workspaces come and gone in two minutes of the author's session (found with perf)."
+            date: 2026-10-20
       - id: _readAreas
         description: "Reads every workspace's work area on the primary monitor into this._areas and returns the workspaces whose area is not the one remembered. A workspace seen for the first time is remembered and not returned: it holds nothing to lay out yet. Read once at enable."
       - id: adoptExisting
@@ -267,7 +315,7 @@ components:
       - id: _tilesBySight
         description: "Which of the windows already open at enable lie as tiles, and on which side: relevant, on the primary monitor, not minimized, maximized or fullscreen, not Android's and not closed or left alone by a rule, as tall as the work area of their workspace and touching its left or right edge without spanning its width, each within TILE_SIGHT_PX — a window that settled a little wider or taller than it was tiled still counts. Where two would take the same side of one workspace, the one higher in the stacking order does. Only the primary monitor's: tiles on another monitor are drag's plain tiles, which keep no role (drag#_plainTile)."
   - id: drag
-    type: "@Singleton"
+    type: "JavaScript module holding state of its own"
     src: borshevik-workspace-manager@komorebinator/drag.js
     description: "Dragging by the title bar, resizing a tile by hand, and Super+Left/Right: follows the grab, shows the snap preview, and dispatches what the user did (behaviour#drag-and-snap). On a secondary monitor it stands in for GNOME's own tiling instead, by itself and without the planner, since nothing there is arranged (behaviour#secondary-monitors)."
     fields:
@@ -291,7 +339,16 @@ components:
         description: On a secondary monitor, the geometry a window had before it was tiled there, given back when it is untiled — as GNOME's own tiling does.
     functions:
       - id: _onGrabBegin
-        description: "Registers late a window that was never announced (windows#register): Chrome's detached tab windows on Wayland never send window-created, and without this could not be snapped. Unless a rule leaves it alone or it is Android's, which only android takes. A grab's flags are masked off before its kind is looked at: Chrome's tab dragged out of its window moves with WINDOW_FLAG_UNCONSTRAINED set (op 1025), and compared whole that grab was never taken for a move — the old code registered such a window late and then never snapped it (found by the chrome scenarios, 2026-10-18). A move grab starts a drag, followed at every move of the pointer, which the cursor tracker announces (position-invalidated, _follow) — not the stage, which sees no motion under a move grab, nor the window, which stops moving once pushed against the panel while the pointer goes on into the top zone (both measured in the test machine, 2026-10-19, where it replaced a poll every 33ms); a resize grab of a tile is remembered for _onGrabEnd. Whatever a grabbed window waited for from executor is dropped (executor#forgetPending): what the hand does to it is the user's, and the rect put back at its next size would undo it. A grab on a full Android window starts neither: resizing any Waydroid window resizes Android's whole display."
+        description: "Registers late a window that was never announced (windows#register): Chrome's detached tab windows on Wayland never send window-created, and without this could not be snapped. Unless a rule leaves it alone or it is Android's, which only android takes. A grab's flags are masked off before its kind is looked at: Chrome's tab dragged out of its window moves with WINDOW_FLAG_UNCONSTRAINED set (op 1025), and compared whole that grab was never taken for a move (decisions#mask-flags). A move grab starts a drag, followed at every move of the pointer, which the cursor tracker announces (position-invalidated, _follow) — not the stage, which sees no motion under a move grab, nor the window, which stops moving once pushed against the panel while the pointer goes on into the top zone (decisions#cursor-tracker); a resize grab of a tile is remembered for _onGrabEnd. Whatever a grabbed window waited for from executor is dropped (executor#forgetPending): what the hand does to it is the user's, and the rect put back at its next size would undo it. A grab on a full Android window starts neither: resizing any Waydroid window resizes Android's whole display."
+        decisions:
+          - id: mask-flags
+            description: "A grab's flags are masked off before its kind is looked at: the old code, comparing them whole, registered a Chrome tab dragged out of its window late and then never snapped it — found by the chrome scenarios."
+            date: 2026-10-18
+          - id: cursor-tracker
+            description: A drag follows the cursor tracker, measured in the test machine against the stage and the window.
+            rejected:
+              - a poll every 33ms, which it replaced
+            date: 2026-10-19
       - id: isDragging
         description: "Whether a window is being dragged right now, for windows: a dragged window's unmaximize and workspace change are the drag's, which dispatches what they mean."
       - id: _follow
@@ -307,7 +364,7 @@ components:
       - id: _plainRestore
         description: Gives a window tiled on a secondary monitor its geometry back — on the second press, or only its size when a drag takes it away.
   - id: android
-    type: "@Singleton"
+    type: "JavaScript module holding state of its own"
     src: borshevik-workspace-manager@komorebinator/android.js
     description: Waydroid's windows (see the description for why they need a treatment of their own). Tells a full-screen Android app from a floating one by the layers drawn inside its window, registers the first as a full window like any other, leaves the second alone, and keeps a window's place when Waydroid replaces it. What it moves it moves through dispatch, like everything else.
     fields:
@@ -315,7 +372,11 @@ components:
         description: "The classes of Waydroid's windows: `Waydroid` for Android's full interface and `waydroid.<package>` for each app (isAndroid)."
       - id: ANDROID_REPLACE_MS
         default: 500
-        description: "How long a closed Android window waits for its replacement (awaitReplacement), and a full-screen one that stopped filling its window waits before its release (_scheduleRelease) — the same wait, since both are Waydroid about to recreate a window: 500ms, against the 50–60ms Waydroid took between closing a window and opening the next on 2026-10-05, about 300ms at most when Android also changed the app's mode. A timer agreed with the author on purpose (see the guidelines on timers): Waydroid gives no link between a window it closes and the one it opens in its place, so only time tells a recreation from an app closed for good. Taking it away, or changing it, needs tests of its own first: Android's windows recreated on a theme change, on a switch between floating and full screen and on Settings opening in two panes, each landing where the window it replaces was, in the test machine's android group."
+        description: "How long a closed Android window waits for its replacement (awaitReplacement), and a full-screen one that stopped filling its window waits before its release (_scheduleRelease) — the same wait, since both are Waydroid about to recreate a window: 500ms (decisions#measured-gap). A timer agreed with the author on purpose (see the guidelines on timers): Waydroid gives no link between a window it closes and the one it opens in its place, so only time tells a recreation from an app closed for good. Taking it away, or changing it, needs tests of its own first: Android's windows recreated on a theme change, on a switch between floating and full screen and on Settings opening in two panes, each landing where the window it replaces was, in the test machine's android group."
+        decisions:
+          - id: measured-gap
+            description: 500ms, against the 50–60ms Waydroid took between closing a window and opening the next, about 300ms at most when Android also changed the app's mode.
+            date: 2026-10-05
       - id: this._state
         type: Map<Meta.Window, androidState>
         description: "Every open Android window being watched, with its own state: `fullScreen` while its app fills it and it is registered as a full window — such a window keeps its workspace and size, and is never tiled from the keyboard or snapped at the end of a drag, since resizing any Waydroid window resizes Android's whole display; `handlers`, the signals followed on its actor tree; `pending`, a look queued for the next idle; `release`, the timer of a pending release; `inheritedOrigin`, where the window it replaced came from; `adopt`, set for a window taken at enable (adoptExisting). The entry is deleted as the window closes, and what must outlive it is kept apart (this._closed, this._goneOrigins). On disable each one's handlers are disconnected; a look already queued then finds the map gone and does nothing."
@@ -339,9 +400,13 @@ components:
       - id: wasClosed
         description: Whether an Android window was closed rather than moved — set as it unmanages, for windows#_onWindowRemoved, which decides only at the next idle.
       - id: _fillsWindow
-        description: "Whether the app in an Android window fills it: true when the app's layers together cover the whole window, false when they cover less, null while there are none to look at yet. GNOME tells the two apart in no other way — Waydroid makes every window, floating or full screen, a maximized surface the size of Android's whole display, transparent and deaf to clicks outside the app, and draws the app on subsurfaces of it at the place Android put it; so the first surface in the window actor's tree is that background and the visible ones after it are the app. Surface actors are found by GType (MetaSurfaceActor), the class not being introspectable. Checked on GNOME 50 with Waydroid 1.6 on 2026-10-05: Settings floating had its layers at 713,181–1177,1005 of 1728×1048, full screen at 0,0–1728,1048 in two panes."
+        description: "Whether the app in an Android window fills it: true when the app's layers together cover the whole window, false when they cover less, null while there are none to look at yet. GNOME tells the two apart in no other way — Waydroid makes every window, floating or full screen, a maximized surface the size of Android's whole display, transparent and deaf to clicks outside the app, and draws the app on subsurfaces of it at the place Android put it; so the first surface in the window actor's tree is that background and the visible ones after it are the app. Surface actors are found by GType (MetaSurfaceActor), the class not being introspectable. Checked on GNOME 50 with Waydroid 1.6 (decisions#checked-layers)."
+        decisions:
+          - id: checked-layers
+            description: "Checked on GNOME 50 with Waydroid 1.6: Settings floating had its layers at 713,181–1177,1005 of 1728×1048, full screen at 0,0–1728,1048 in two panes."
+            date: 2026-10-05
       - id: watch
-        description: "Watches an Android window for as long as it is open: claims the place of a window it replaces first (claimPlace), looks at it at once (_check), then again whenever its app's layers change (_follow). Asking once at the first frame is not enough, for two reasons seen on 2026-10-05: Waydroid replaces the window when Android switches an app between floating and full screen, but the new window's first frames can still show the app at its old floating place (Play Store, maximized, showed 685,102–1277,888 three times running); and a floating app maximized inside Android may keep its window. Signals replaced a 250ms poll the same day, after counting them over two minutes of YouTube: 1751 in 126s, in bursts of up to 118 a second during animations and none at all in 91 of those seconds, against a poll that woke the shell 4 times a second all the time; signals arrive in frames GNOME draws anyway. When the window closes it records that it was closed, and where it came from if full screen — connected before windows#_onUnmanaged, which forgets the record that origin is read from. Called at the next idle after the first frame, never from it (see the guidelines)."
+        description: "Watches an Android window for as long as it is open: claims the place of a window it replaces first (claimPlace), looks at it at once (_check), then again whenever its app's layers change (_follow). Asking once at the first frame is not enough, for two reasons seen in Waydroid: Waydroid replaces the window when Android switches an app between floating and full screen, but the new window's first frames can still show the app at its old floating place (Play Store, maximized, showed 685,102–1277,888 three times running); and a floating app maximized inside Android may keep its window. Signals replaced a 250ms poll the same day, after counting them over two minutes of YouTube: 1751 in 126s, in bursts of up to 118 a second during animations and none at all in 91 of those seconds, against a poll that woke the shell 4 times a second all the time; signals arrive in frames GNOME draws anyway. When the window closes it records that it was closed, and where it came from if full screen — connected before windows#_onUnmanaged, which forgets the record that origin is read from. Called at the next idle after the first frame, never from it (see the guidelines)."
       - id: _follow
         description: "Follows an actor of an Android window's tree, and all below it: children added (followed in turn) and removed on every actor, and, on every surface actor, its allocation and visibility — a layer moving, resizing, or being hidden or shown, which Waydroid does without changing its size. Each brings a look at the window (_scheduleCheck). What an app draws inside a layer — video, a game, scrolling — emits none of these, so a full-screen game costs nothing while it runs."
       - id: _unfollow
@@ -353,7 +418,13 @@ components:
       - id: _takeFullScreen
         description: "Registers an Android window whose app fills it like any new window (windows#register), marked full screen: being maximized, it gets a workspace of its own through the ordinary placement (behaviour#full-alone), which also records where it came from."
       - id: _scheduleRelease
-        description: "Releases a full-screen Android window whose app stopped filling it only if, ANDROID_REPLACE_MS later, it is still open, still full screen by the extension's record and still not filled; _cancelRelease calls it off when the app fills it again or the window closes, and on disable. Before Waydroid recreates a window — on a change of Android's theme or dark mode, say — Android draws a frame or two of a full-screen app not filling it; released at once, the window went to the workspace it came from, which was shown, and its full-screen replacement was then moved to a new workspace: the screen jumped away and back (seen in the test machine, 2026-10-05). Waiting the same time a closed window waits for its replacement lets the closing win, so the replacement takes the full-screen window's own workspace. The cost is that a real return to a floating app takes effect half a second later."
+        description: "Releases a full-screen Android window whose app stopped filling it only if, ANDROID_REPLACE_MS later, it is still open, still full screen by the extension's record and still not filled; _cancelRelease calls it off when the app fills it again or the window closes, and on disable. Before Waydroid recreates a window — on a change of Android's theme or dark mode, say — Android draws a frame or two of a full-screen app not filling it; released at once, the window went to the workspace it came from, which was shown, and its full-screen replacement was then moved to a new workspace: the screen jumped away and back (decisions#not-at-once). Waiting the same time a closed window waits for its replacement lets the closing win, so the replacement takes the full-screen window's own workspace. The cost is that a real return to a floating app takes effect half a second later."
+        decisions:
+          - id: not-at-once
+            description: A full-screen window that stopped filling its window is released after the wait, not at once.
+            rejected:
+              - releasing at once — the screen jumped away and back, seen in the test machine
+            date: 2026-10-05
       - id: _cancelRelease
         description: Calls off a pending release (_scheduleRelease).
       - id: _release
@@ -363,13 +434,21 @@ components:
       - id: _return
         description: Has a floating-again Android window put back on the workspace a full-screen window came from, if that still exists and is not where the window is, and shown there — the user has just acted on it — by dispatching returnTo. Forgets the inherited origin either way, so a floating window returns once.
       - id: awaitReplacement
-        description: "The extension's one rule for Waydroid replacing windows: a closed Android window waits ANDROID_REPLACE_MS for a window of the same app, and the workspace it was on is not left meanwhile; if none comes, the app was closed for good and windows#_leaveIfEmpty runs then. Waydroid closes an Android window and opens a new one, always on the active workspace, whenever Android recreates the app's surface — switching it between floating and full screen, a change of Android's theme or dark mode (which theme-sync makes whenever GNOME's changes), Settings opening in two panes — and without this the new window landed wherever the user was, or on the workspace windows#_leaveIfEmpty had just gone to from the one the closed window emptied. One rule rather than a case per cause, so a recreation not yet seen behaves the same. The wait is the only delay in Android's handling, and only when an Android window closes; it was chosen on 2026-10-05 after the author had first refused any delay and after never leaving a workspace an Android window emptied had been tried and dropped."
+        description: "The extension's one rule for Waydroid replacing windows: a closed Android window waits ANDROID_REPLACE_MS for a window of the same app, and the workspace it was on is not left meanwhile; if none comes, the app was closed for good and windows#_leaveIfEmpty runs then. Waydroid closes an Android window and opens a new one, always on the active workspace, whenever Android recreates the app's surface — switching it between floating and full screen, a change of Android's theme or dark mode (which theme-sync makes whenever GNOME's changes), Settings opening in two panes — and without this the new window landed wherever the user was, or on the workspace windows#_leaveIfEmpty had just gone to from the one the closed window emptied. One rule rather than a case per cause, so a recreation not yet seen behaves the same. The wait is the only delay in Android's handling, and only when an Android window closes (decisions#the-one-wait)."
+        decisions:
+          - id: the-one-wait
+            description: A wait for the replacement when an Android window closes — the one delay in Android's handling, agreed by the author.
+            rejected:
+              - no delay at all — the author's first answer
+              - never leaving a workspace an Android window emptied — tried and dropped
+            by: author
+            date: 2026-10-05
       - id: claimPlace
         description: "Makes a new Android window the replacement of a closed one of the same app still awaited, if any — before it is looked at, so it is placed from where its predecessor was: it is put on that window's workspace (if that still exists and it opened elsewhere) by dispatching returnTo without showing it, inherits where that window came from if it was full screen, and the wait is cancelled. The ordinary rules then apply to it: full screen keeps or gets a workspace of its own, floating is left alone or, replacing a full-screen window, goes back where that one came from."
       - id: adoptExisting
         description: "At enable, takes the Android windows already open: one whose app fills it as full screen, registered and watched before its signals are connected so that, closing, it records its origin before the extension forgets it; a floating one is left alone; either is then watched — after it is placed, so the watch only follows its changes and moves nothing at enable."
   - id: rules
-    type: "@Singleton"
+    type: "JavaScript module holding state of its own"
     src: borshevik-workspace-manager@komorebinator/rules.js
     description: "The window rules (behaviour#window-rules): matching windows against them and applying their actions. The rules themselves are the window-rules setting, in the shape rules-ui writes (rules-ui#rule (JSON shape, not a class)), and are edited there."
     functions:
@@ -394,23 +473,26 @@ components:
       - id: appliedTo
         description: The ids of the rules that matched a window, for rules-ui.
   - id: rule-changes
-    type: "@Module"
+    type: "JavaScript module of functions, holding no state"
     src: borshevik-workspace-manager@komorebinator/rule-changes.js
-    description: "Brings a saved list of window rules up to date with the default rules (behaviour#window-rules#new-defaults-reach-saved-list). A default rule reaches by itself only an account that never saved rules, which reads the schema's list; saving writes the whole list into the account, the defaults of that day among them, and from then on the schema is never read again, so a rule added to it later never arrived (the author had to add the Google Discover rule by hand). What changed is kept as versions, one file each in rule-changes-files, and the account keeps in rules-version the last one it has; at enable the versions above it are applied in order. A version is a list of changes to rules by id, and every change leaves alone what the user made their own: what they changed stays, what they deleted stays deleted, and only what is still as the extension shipped it follows a new default. An account that never saved rules is given nothing but the newest version number, its rules being the schema's already: it must be recorded at once, or a default the user deletes later, after saving, would be added back."
+    description: "Brings a saved list of window rules up to date with the default rules (behaviour#window-rules#new-defaults-reach-saved-list). A default rule reaches by itself only an account that never saved rules, which reads the schema's list; saving writes the whole list into the account, the defaults of that day among them, and from then on the schema is never read again, so a rule added to it later never arrived (decisions#discover-by-hand). What changed is kept as versions, one file each in rule-changes-files, and the account keeps in rules-version the last one it has; at enable the versions above it are applied in order. A version is a list of changes to rules by id, and every change leaves alone what the user made their own: what they changed stays, what they deleted stays deleted, and only what is still as the extension shipped it follows a new default. An account that never saved rules is given nothing but the newest version number, its rules being the schema's already: it must be recorded at once, or a default the user deletes later, after saving, would be added back."
     functions:
       - id: catchUp
         description: "At enable, before anything reads the rules. The only thing done while the account is up to date is asking whether the file of the version after rules-version exists. If it does: an account whose window-rules has no user value (Gio.Settings#get_user_value) is set to the newest version found among the files' names, and nothing else is written; otherwise each version from rules-version + 1 on, while its file exists, is read, applied to the saved list (applyChanges), the list written when it changed and the version recorded, one version at a time, so a run cut short keeps the versions it finished. A saved list that does not parse is left as it is and nothing recorded, so the versions are applied once the user has saved a list that does: the extension reads such a value as no rules, and writing over it would lose whatever it held. A file that does not parse, or a change of a kind it does not know, stops it there, logged, with the version left at the last one applied; the extension goes on with the rules as they are."
       - id: applyChanges
         description: "One version's changes applied to a list of rules, on plain objects, so tests/rule-changes runs it without a shell; returns the new list, or null when nothing changed. `{ add: <id> }` appends the rule with that id from the schema's default list when the saved list has none: the file and the schema ship together, so a rule no longer in the schema was taken out of it on purpose and is not added. `{ set: <id>, fields: { <path>: { from, to } } }` sets each field, a dotted path into the rule (`conditions.class.regex`, `actions.close.enabled`), to its `to` when every field of the change still holds its `from` — the fields of one change move together or not at all, so a rule never ends up half the extension's and half the user's; `from` null stands for a field the rule does not have. `{ remove: <id>, was: [<rule>, ...] }` takes the rule out when it is, field for field, one of the versions the extension shipped it in — a list, since a rule saved before the extension gave rules a new field lacks that field. A rule the user changed is theirs and is left as it is; a rule the list does not have the user deleted, and nothing brings it back."
+    decisions:
+      - id: discover-by-hand
+        description: "Seen: the author had to add the Google Discover rule to their own account by hand, the account having saved its rules before the rule was added."
   - id: rule-changes-files
     type: "@ConfigFile"
     format: JSON
     src: borshevik-workspace-manager@komorebinator/rule-changes/
-    description: "The versions of rule-changes, one file each named by its number — 1.json, 2.json, with no gap — each a JSON list of changes. A file per version rather than one growing list so that an account up to date opens none of them, and one behind opens only the ones it lacks. A file that has shipped is never edited: accounts that applied it will not apply it again, so a correction is a new version. 1 adds the two rules the defaults gained after their first set of 2026-04-15, Android's input method (2026-10-07) and the Google Discover feed (2026-10-18)."
+    description: "The versions of rule-changes, one file each named by its number — 1.json, 2.json, with no gap — each a JSON list of changes. A file per version rather than one growing list so that an account up to date opens none of them, and one behind opens only the ones it lacks. A file that has shipped is never edited: accounts that applied it will not apply it again, so a correction is a new version. 1 adds the two rules the defaults gained after their first set, Android's input method and the Google Discover feed."
   - id: indicator
     type: "@View"
     src: borshevik-workspace-manager@komorebinator/indicator.js
-    description: "The panel indicator that replaces the Activities button: the wall at a glance, one button per workspace with its windows' icons (behaviour#indicator). It shows and switches; it places nothing. Built as model and view: what it shows is read into plain data (indicator-model#readWall), what changed from the model shown is worked out (indicator-model#diff), and only that is applied to the buttons (indicator-view), which stay from one change to the next — a switch of workspace changes two buttons' state and builds nothing. Until 2026-10-20 every change destroyed the whole indicator and built it anew, icons and effects with it: 6 ms of the main thread at every switch of workspace in the test machine, some 70% of all the extension did for one, against half a millisecond since (measured with perf). Each kind of change has its method in the view, so an animation of one — a workspace's button appearing, going, moving — belongs to that method alone and touches nothing else. Reordering the workspaces by dragging a button is workspace-drag's."
+    description: "The panel indicator that replaces the Activities button: the wall at a glance, one button per workspace with its windows' icons (behaviour#indicator). It shows and switches; it places nothing. Built as model and view: what it shows is read into plain data (indicator-model#readWall), what changed from the model shown is worked out (indicator-model#diff), and only that is applied to the buttons (indicator-view), which stay from one change to the next — a switch of workspace changes two buttons' state and builds nothing. It is not rebuilt at every change (decisions#not-rebuilt). Each kind of change has its method in the view, so an animation of one — a workspace's button appearing, going, moving — belongs to that method alone and touches nothing else. Reordering the workspaces by dragging a button is workspace-drag's."
     fields:
       - id: this._model
         type: Array<indicator-model#Entry>
@@ -426,14 +508,18 @@ components:
         description: An update was asked for during a drag, to be done as it ends.
       - id: this._wsHandles
         type: Array<[Meta.Workspace, handler id]>
-        description: "The window-added and window-removed handlers on every workspace, so a window moving between workspaces updates the indicator even when nothing else changes. Those of a workspace GNOME removes are dropped at its workspace-removed (workspaces#dropRemovedWorkspaces): kept until disable they piled up, two for every workspace a maximized window had held (found by behaviour#quiet#nothing-left-behind, 2026-10-20)."
+        description: "The window-added and window-removed handlers on every workspace, so a window moving between workspaces updates the indicator even when nothing else changes. Those of a workspace GNOME removes are dropped at its workspace-removed (workspaces#dropRemovedWorkspaces): kept until disable they piled up, two for every workspace a maximized window had held (found by behaviour#quiet#nothing-left-behind)."
     functions:
       - id: enable
         description: "Hides the Activities button, puts the indicator first in the panel's left box, and follows what changes the wall as it is shown: workspaces added, removed, reordered or switched, windows arriving on and leaving each workspace (this._wsHandles, connected for each workspace as it is added), windows appearing or going (Shell.WindowTracker's tracked-windows-changed), the overview, for the logo's highlight, and the session mode, for the lock screen."
       - id: refresh
         description: "Called by dispatch after a plan has run: a window changing role — tiled, made full, floated — reorders its workspace's icons, and Mutter sends nothing the indicator follows for it."
       - id: _schedule
-        description: "Batches updates to the next idle, one per burst of signals. During a drag it only marks the indicator stale (this._stale), and the drag's end updates it. Nothing is scheduled once the panel is gone: when the session ends GNOME destroys the panel before it disables the extension, and an update still pending then built into the destroyed box (`St.BoxLayout ... has been already disposed`, once in six session ends in the test machine, 2026-10-19); the box's destroy drops the view and the pending update."
+        description: "Batches updates to the next idle, one per burst of signals. During a drag it only marks the indicator stale (this._stale), and the drag's end updates it. Nothing is scheduled once the panel is gone: when the session ends GNOME destroys the panel before it disables the extension, and an update still pending then built into the destroyed box (decisions#panel-gone); the box's destroy drops the view and the pending update."
+        decisions:
+          - id: panel-gone
+            description: "Seen once in six session ends in the test machine: `St.BoxLayout ... has been already disposed`, an update built into the destroyed box."
+            date: 2026-10-19
       - id: _update
         description: "Reads the wall again (indicator-model#readWall), works out what changed from the model shown (indicator-model#diff), and has the view apply just that (indicator-view#apply); a reading that changed nothing touches no actor."
       - id: _onPress
@@ -444,7 +530,7 @@ components:
         description: "workspace-drag's callback at its end: forgets the drag and updates if the indicator went stale meanwhile or the drag really started — the pressed button had its release taken by the drag (workspace-drag#_end), and a reorder the drag made comes as a signal the update applies as a move."
     components:
       - id: indicator-model
-        type: "@Module"
+        type: "JavaScript module of functions, holding no state"
         src: borshevik-workspace-manager@komorebinator/indicator-model.js
         description: "What the indicator shows, apart from how it is shown: plain data, and the changes from one reading of it to the next. It touches no actor, so the view is free to animate each change, and diff is tested on plain objects (tests#indicator-model)."
         fields:
@@ -468,13 +554,18 @@ components:
           - id: _setActive
             description: "The active workspace's button opaque, with the active background, its icons in colour; any other at 80% and greyed, and on a light panel the grey darkened (_readDim). The grey is one Clutter.DesaturateEffect on the button's row, switched on and off, not one made anew for each icon of each button at every change: each effect draws its actor through a buffer of its own at every paint of the panel. The darkening is a second one, a Clutter.BrightnessContrastEffect on the same row, switched on only for an inactive button while the stylesheet asks for it — never in the dark variant, which pays nothing for it."
           - id: _readDim
-            description: "Reads how much to darken an inactive button's grey from its row's style — -bwm-inactive-brightness and -bwm-inactive-contrast on .bwm-ws-row, which only stylesheet-light.css sets — whenever the row's style changes, which includes GNOME Shell swapping the stylesheet for the other variant. Desaturated, an app's icon is a mid or light grey, which a dark panel shows plainly and a light one all but hides (the author saw it, 2026-11-04); the light variant darkens it instead of giving up the grey, so an inactive workspace still reads as one. The amount lives in the stylesheet, beside the light variant's other colours."
+            description: Reads how much to darken an inactive button's grey from its row's style — -bwm-inactive-brightness and -bwm-inactive-contrast on .bwm-ws-row, which only stylesheet-light.css sets — whenever the row's style changes, which includes GNOME Shell swapping the stylesheet for the other variant. Desaturated, an app's icon is a mid or light grey, which a dark panel shows plainly and a light one all but hides (decisions#darken-on-light); the light variant darkens it instead of giving up the grey, so an inactive workspace still reads as one. The amount lives in the stylesheet, beside the light variant's other colours.
+            decisions:
+              - id: darken-on-light
+                description: "On the light variant a desaturated icon is darkened rather than left grey: a light panel all but hid the grey — seen by the author."
+                by: author
+                date: 2026-11-04
           - id: _setIcons
             description: "Puts the entry's icons in the row, or the '+': an app's icon is taken over from the button's own before one is made (create_icon_texture), so a window come or gone makes one icon, not the row's; the icons left over are destroyed."
           - id: setOverview
             description: The logo's highlight while the overview is open.
       - id: workspace-drag
-        type: "@Module"
+        type: "JavaScript module of functions, holding no state"
         src: borshevik-workspace-manager@komorebinator/workspace-drag.js
         description: "One drag of a workspace's button in the indicator, from the press to its end (behaviour#indicator): the gesture, the gap it opens, and the reorder it ends in. Made by the indicator for each press on a button, it follows the press's events (_onEvent) until the button is released or Escape is pressed, and then calls back, so the indicator rebuilds if it went stale meanwhile."
         fields:
@@ -486,12 +577,28 @@ components:
             description: How long the buttons take to move apart for the gap, or back.
           - id: OUTLINE_PX
             default: 2
-            description: The width of the outline around the dragged button, the border of stylesheet's .bwm-ws-dragged, by which the frame is set off so what it holds stays where the button was. Only what the button shows — its number and icons — is cloned to follow the pointer; the frame, a St.Bin carrying that class, gives it the button's shape with a background and outline of its own, the same whichever workspace is dragged. Cloning the button's background as well let the active workspace's, lighter still under the pointer, swallow the outline (seen by the author, 2026-10-19).
+            description: The width of the outline around the dragged button, the border of stylesheet's .bwm-ws-dragged, by which the frame is set off so what it holds stays where the button was. Only what the button shows — its number and icons — is cloned to follow the pointer; the frame, a St.Bin carrying that class, gives it the button's shape with a background and outline of its own, the same whichever workspace is dragged. The button's background is not cloned with it (decisions#no-background-clone).
+            decisions:
+              - id: no-background-clone
+                description: Only the outline goes with the dragged button, not its background.
+                rejected:
+                  - cloning the background as well — the active workspace's, lighter still under the pointer, swallowed the outline (seen by the author)
+                date: 2026-10-19
         functions:
           - id: _onEvent
-            description: "The events of the press, until it ends. Until the drag starts they are the stage's captured events, seen before the buttons see them. A motion past DRAG_THRESHOLD_PX starts the drag: an actor of the drag's own, 0×0 in the UI group, takes the pointer and keyboard (Main.pushModal), as GNOME's own drags do, and from then on its plain events are listened to — a grab has no capture phase. Without the grab a release over a window went to that window's app and the drag never saw it end: it stayed open and swallowed the next press on the indicator (seen in the test machine, 2026-10-19; the old code had the same flaw). The dragged button's background is cloned to follow the pointer along the panel and the button itself is left as an empty space; every motion after that moves the clone and the gap (_insertionAt, _openGap). The release drops the workspace into the gap, or cancels if the pointer is away from the indicator; Escape cancels; a motion with the button up ends it too, its release having been missed. A press that never became a drag is left to the button's click."
+            description: "The events of the press, until it ends. Until the drag starts they are the stage's captured events, seen before the buttons see them. A motion past DRAG_THRESHOLD_PX starts the drag: an actor of the drag's own, 0×0 in the UI group, takes the pointer and keyboard (Main.pushModal), as GNOME's own drags do, and from then on its plain events are listened to — a grab has no capture phase. Without the grab a release over a window went to that window's app and the drag never saw it end: it stayed open and swallowed the next press on the indicator (decisions#grab). The dragged button's background is cloned to follow the pointer along the panel and the button itself is left as an empty space; every motion after that moves the clone and the gap (_insertionAt, _openGap). The release drops the workspace into the gap, or cancels if the pointer is away from the indicator; Escape cancels; a motion with the button up ends it too, its release having been missed. A press that never became a drag is left to the button's click."
+            decisions:
+              - id: grab
+                description: "The drag holds a grab. Seen in the test machine without it, as the old code had it: a release over a window went to that window's app, and the drag stayed open."
+                date: 2026-10-19
           - id: _insertionAt
-            description: "Where the workspace would go for a pointer at x: the number of the other buttons whose middle the dragged button's left edge has passed, the dragged button centred on the pointer and the others measured where they stand with it taken out of the row, so the gap moving does not move the answer. A button is passed, and the gap opens beyond it, once the dragged one covers more than half of it, as with tabs; measuring by the pointer instead put the gap one button too far when dragging right (seen in the test machine, 2026-10-19). Never after the '+', which stays last."
+            description: "Where the workspace would go for a pointer at x: the number of the other buttons whose middle the dragged button's left edge has passed, the dragged button centred on the pointer and the others measured where they stand with it taken out of the row, so the gap moving does not move the answer. A button is passed, and the gap opens beyond it, once the dragged one covers more than half of it, as with tabs (decisions#by-coverage). Never after the '+', which stays last."
+            decisions:
+              - id: by-coverage
+                description: The gap opens by how much of a button the dragged one covers.
+                rejected:
+                  - measuring by the pointer — put the gap one button too far when dragging right, seen in the test machine
+                date: 2026-10-19
           - id: _openGap
             description: "Moves the other buttons, easing over GAP_MS, so a space the dragged button's width is open at the insertion point: each is shifted by the width of the dragged one if it is after the insertion point and the dragged one was not, or back by it if the dragged one was after it and it now is not."
           - id: _drop
@@ -500,10 +607,16 @@ components:
             description: "Ends the press either way, once, logging why: stops listening, lets the pointer go and destroys the actor that held it, lets the pressed button go without a click (fake_release) if a drag took its release, destroys the clone, puts the buttons back without easing, since the indicator's update follows and moves a reordered one into its place, and calls back the indicator with whether a drag happened."
           - id: cancel
             description: Ends the drag without dropping anything, for the indicator when it is disabled or the screen locks mid-drag (_end).
+    decisions:
+      - id: not-rebuilt
+        description: A change no longer destroys the indicator and builds it anew.
+        rejected:
+          - rebuilding the whole indicator at every change, icons and effects with it, as until 2026-10-20 — 6 ms of the main thread at every switch of workspace in the test machine, some 70% of all the extension did for one, against half a millisecond since (measured with perf)
+        date: 2026-10-20
   - id: rules-ui
     type: "@View"
     src: borshevik-workspace-manager@komorebinator/window-rules-ui.js
-    description: "An overlay inside GNOME Shell (not a separate window) for seeing and editing window rules, toggled by Super+R. Its header holds the title, Window Rules whatever is shown — rules have no names to show instead — then the form's own tab, the two tabs and the close button. The form's tab reads New rule, and starts a blank one; while a form is shown it is highlighted, as the tab a list is on is, and reads Edit rule for a saved rule. The Windows tab lists the active workspace's windows with the rules that apply to each and a button to start a rule from that window; it follows window and workspace changes live. The Rules tab lists all rules. Pressing a rule in either list opens its form in place of the list, a page of its own (_showEditor), headed by the rule's summary, which follows every change made in it: rules were once edited in the list itself, opening under their line, and the overlay grew and shrank with every one opened (the author, 2026-10-20). The form edits a draft: Save, usable only while the draft is one rules#savable accepts — it picks some windows, and its patterns are valid — stores it, and applies it at once to all open windows (rules#applyToAll); Cancel drops the draft; Delete, apart on the other side and only for a saved rule, removes it; each goes back to the list the form came from, and so does either tab, as Cancel. Nothing rebuilds a list under a form: the Windows tab's live updates are dropped while one is shown. A rule started from a window is prefilled with its class, and its geometry with where the window is now, so switching geometry on keeps it in place. The overlay keeps one height whichever page it shows (_fitHeight)."
+    description: "An overlay inside GNOME Shell (not a separate window) for seeing and editing window rules, toggled by Super+R. Its header holds the title, Window Rules whatever is shown — rules have no names to show instead — then the form's own tab, the two tabs and the close button. The form's tab reads New rule, and starts a blank one; while a form is shown it is highlighted, as the tab a list is on is, and reads Edit rule for a saved rule. The Windows tab lists the active workspace's windows with the rules that apply to each and a button to start a rule from that window; it follows window and workspace changes live. The Rules tab lists all rules. Pressing a rule in either list opens its form in place of the list, a page of its own (_showEditor), headed by the rule's summary, which follows every change made in it (decisions#editor-page). The form edits a draft: Save, usable only while the draft is one rules#savable accepts — it picks some windows, and its patterns are valid — stores it, and applies it at once to all open windows (rules#applyToAll); Cancel drops the draft; Delete, apart on the other side and only for a saved rule, removes it; each goes back to the list the form came from, and so does either tab, as Cancel. Nothing rebuilds a list under a form: the Windows tab's live updates are dropped while one is shown. A rule started from a window is prefilled with its class, and its geometry with where the window is now, so switching geometry on keeps it in place. The overlay keeps one height whichever page it shows (_fitHeight)."
     fields:
       - id: "rule (JSON shape, not a class)"
         type: "{id: uuid, conditions: {class:{enabled,regex}, title:{enabled,regex}, onAllWorkspaces:{enabled,value}, above:{enabled,value}, skipTaskbar:{enabled,value}, fullscreen:{enabled,value}, maximized:{enabled,value}}, actions: {onAllWorkspaces:{enabled,value}, above:{enabled,value}, openOnNewWorkspace:{enabled,value}, ignore:{enabled,value}, close:{enabled,value}, geometry:{enabled,x,y,w,h}}}"
@@ -513,25 +626,55 @@ components:
         description: "What the overlay keeps free above and below it when the screen is too short for its height (_fitHeight): it is then the primary work area's height less this margin on both sides, and its page scrolls."
     functions:
       - id: _fitHeight
-        description: "Sets the overlay's one height as it opens: the form's, its tallest page, measured once with a saved rule's form showing (Delete included), which the list replaces before anything is drawn; less only when the work area is too short (MARGIN_PX). So it neither grows nor shrinks from page to page, and a short list leaves room below it. The form is as tall whatever the rule: a toggle has the same size on and off (stylesheet's .bwm-toggle), where the outline only an 'on' toggle had made every enabled row 2px taller — the form of a rule with three actions on outgrew the height measured on a blank one and scrolled (seen in the test machine, 2026-10-20)."
+        description: "Sets the overlay's one height as it opens: the form's, its tallest page, measured once with a saved rule's form showing (Delete included), which the list replaces before anything is drawn; less only when the work area is too short (MARGIN_PX). So it neither grows nor shrinks from page to page, and a short list leaves room below it. The form is as tall whatever the rule: a toggle has the same size on and off (stylesheet's .bwm-toggle) (decisions#same-size-toggle)."
+        decisions:
+          - id: same-size-toggle
+            description: A toggle has the same size on and off.
+            rejected:
+              - an outline on an 'on' toggle alone — made every enabled row 2px taller, and the form of a rule with three actions on outgrew the height measured on a blank one and scrolled (seen in the test machine)
+            date: 2026-10-20
       - id: _showEditor
         description: "One rule's form in place of the list, the form's tab highlighted and named for it (New rule, Edit rule) and no list tab, the list's live updates dropped. A page is never destroyed from inside one of its own buttons: a press on a rule, and every button of the form, goes on at the next idle (_later)."
+    decisions:
+      - id: editor-page
+        description: A rule's form opens in place of the list, a page of its own.
+        rejected:
+          - editing rules in the list itself, opening under their line — the overlay grew and shrank with every one opened
+        by: author
+        date: 2026-10-20
   - id: preferences
     type: "@View"
     src: borshevik-workspace-manager@komorebinator/prefs.js
     description: "The page the GNOME Extensions app shows for this extension: whether landing on an empty workspace opens the overview; what happens when the last window on a workspace closes (go back, open the overview, or nothing); and, in a Debug group of their own below, what is there to find out what the extension does: two rows, each a switch with a Copy of its own, so it is plain which log is copied, and usable only while its switch is on. Debug logging's Copy takes the last DEBUG_LOG_MINUTES of the debug log from the journal (readDebugLog). The performance log's (perf-log) takes the performance report as text (perf#formatReport) through the extension's D-Bus object, since preferences run in a process of their own; switching it on starts a new report, so there is no Reset here (the D-Bus object's ResetPerf is the tests'). A toast says what was copied, or why nothing was: the journal unreadable, the debug log empty, the extension not running to answer."
     functions:
       - id: readDebugLog
-        description: "The extension's own entries of the journal for the last DEBUG_LOG_MINUTES, read with `journalctl --user` — the user's own journal, which needs no group — since the shell has nothing of its log. An entry is taken whole, its indented lines with it: one of the debug log (`[BWM]`), an error whose stack trace names one of the extension's files, or one GNOME reports of the extension with an error in it, loading it say. GNOME's notes that name the extension in passing are left out (`... already installed ... will not be loaded`), and so are other extensions' errors (checked in the test machine, 2026-10-20)."
+        description: "The extension's own entries of the journal for the last DEBUG_LOG_MINUTES, read with `journalctl --user` — the user's own journal, which needs no group — since the shell has nothing of its log. An entry is taken whole, its indented lines with it: one of the debug log (`[BWM]`), an error whose stack trace names one of the extension's files, or one GNOME reports of the extension with an error in it, loading it say. GNOME's notes that name the extension in passing are left out (`... already installed ... will not be loaded`), and so are other extensions' errors (checked in the test machine)."
     fields:
       - id: DEBUG_LOG_MINUTES
         default: 10
-        description: "How much of the debug log Copy takes: a bug just seen, small enough to go into a bug report (the author, 2026-10-20) — with debug logging on, the author's session wrote some 110 000 lines of it in a day. The row's subtitle names the minutes."
+        description: "How much of the debug log Copy takes: a bug just seen, small enough to go into a bug report (decisions#bug-report-size) — with debug logging on, the author's session wrote some 110 000 lines of it in a day. The row's subtitle names the minutes."
+        decisions:
+          - id: bug-report-size
+            description: Copy takes enough of the debug log for a bug just seen, and no more, so it fits in a bug report.
+            by: author
+            date: 2026-10-20
   - id: gschema
     type: "@ConfigFile"
     format: GSettings schema (XML)
     src: borshevik-workspace-manager@komorebinator/schemas/org.gnome.shell.extensions.borshevik-workspace-manager.gschema.xml
-    description: "The extension's settings: the four the preferences page edits — perf-log, off by default, among them; the three keybindings (Super+Left, Super+Right, Super+R); the remembered float sizes per window class; and the window rules, which ship with three examples — Steam on a workspace of its own, picture-in-picture windows on top on every workspace in a corner, and the Collector app on top on every workspace — and two rules for windows Android makes of its own, not an app's. One leaves Android's on-screen keyboard alone (class `waydroid.InputMethod`): Waydroid gives it a window the size of Android's display like an app's, transparent but for the keyboard, whose layers at times cover all of it, so android#_fillsWindow took it for a full-screen app and moved it to a workspace of its own, taking the user there (2026-10-06). The other closes the launcher's Google Discover feed as it opens (class `^waydroid[.]GoogleDiscoverWindow`, behaviour#android-windows#discover-feed-closed): a window nobody can use, which held a workspace until closed by hand (2026-10-18). Each names that one window and no other of Android's own, so nothing useful is caught by a rule written for something else. Android's other windows need no rule: what the extension does to a window breaks them — Waydroid recreates a window whenever Android changes it, so each recreation reads as a new window to place; a maximized Android window covers the others inside Android's single display, where Android pauses them and Waydroid then closes their windows; and resizing any of them changes Android's display mode, on which Android's compositor has crashed — so the extension handles them itself (android#watch). Until 2026-10-05 a default rule left all of them alone, but that left a full-screen Android app on the current workspace among the user's own windows, so the rule was dropped for the extension's own handling, which can tell full screen from floating. A default rule reaches by itself only those who have never saved rules of their own, since saving writes the whole list; a change to the default rules therefore comes with a version in rule-changes-files, which brings it to saved lists, and rules-version is how far an account's saved list has been brought (rule-changes)."
+    description: "The extension's settings: the four the preferences page edits — perf-log, off by default, among them; the three keybindings (Super+Left, Super+Right, Super+R); the remembered float sizes per window class; and the window rules, which ship with three examples — Steam on a workspace of its own, picture-in-picture windows on top on every workspace in a corner, and the Collector app on top on every workspace — and two rules for windows Android makes of its own, not an app's. One leaves Android's on-screen keyboard alone (class `waydroid.InputMethod`): Waydroid gives it a window the size of Android's display like an app's, transparent but for the keyboard, whose layers at times cover all of it, so android#_fillsWindow took it for a full-screen app and moved it to a workspace of its own, taking the user there (decisions#keyboard-rule). The other closes the launcher's Google Discover feed as it opens (class `^waydroid[.]GoogleDiscoverWindow`, behaviour#android-windows#discover-feed-closed): a window nobody can use, which held a workspace until closed by hand (decisions#discover-rule). Each names that one window and no other of Android's own, so nothing useful is caught by a rule written for something else. Android's other windows need no rule: what the extension does to a window breaks them — Waydroid recreates a window whenever Android changes it, so each recreation reads as a new window to place; a maximized Android window covers the others inside Android's single display, where Android pauses them and Waydroid then closes their windows; and resizing any of them changes Android's display mode, on which Android's compositor has crashed — so the extension handles them itself (android#watch). No default rule leaves every Android window alone (decisions#no-android-rule). A default rule reaches by itself only those who have never saved rules of their own, since saving writes the whole list; a change to the default rules therefore comes with a version in rule-changes-files, which brings it to saved lists, and rules-version is how far an account's saved list has been brought (rule-changes)."
+    decisions:
+      - id: keyboard-rule
+        description: "A default rule leaves Android's on-screen keyboard alone: without it android#_fillsWindow took the keyboard for a full-screen app and moved it to a workspace of its own, taking the user there."
+        date: 2026-10-06
+      - id: discover-rule
+        description: "A default rule closes the launcher's Google Discover feed as it opens: nobody can use it, and it held a workspace until closed by hand."
+        date: 2026-10-18
+      - id: no-android-rule
+        description: Android's windows are left to the extension's own handling, which can tell full screen from floating.
+        rejected:
+          - a default rule leaving all Android windows alone, as until 2026-10-05 — left a full-screen Android app on the current workspace among the user's own windows
+        date: 2026-10-05
   - id: metadata
     type: "@ConfigFile"
     src: borshevik-workspace-manager@komorebinator/metadata.json
@@ -541,14 +684,26 @@ components:
     format: SVG
     role: app-icon
     src: borshevik-workspace-manager@komorebinator/bwm-symbolic.svg
-    description: The logo on the panel indicator's first button. A symbolic icon — the file name ending in -symbolic.svg is what makes GNOME Shell treat it as one — so the shell draws it in the panel's text colour like the status icons beside it, dark on a light panel and light on a dark one. Until 2026-11-03 it was bwm_icon.svg, drawn in white, which stayed white on the light panel of GNOME's light variant and of Borshevik Glass.
+    description: The logo on the panel indicator's first button. A symbolic icon — the file name ending in -symbolic.svg is what makes GNOME Shell treat it as one — so the shell draws it in the panel's text colour like the status icons beside it, dark on a light panel and light on a dark one. It is not white alone (decisions#not-white).
+    decisions:
+      - id: not-white
+        description: The icon is not drawn in white alone, so it shows on a light panel too.
+        rejected:
+          - bwm_icon.svg, drawn in white, as until 2026-11-03 — stayed white on the light panel of GNOME's light variant and of Borshevik Glass
+        date: 2026-11-03
   - id: stylesheet
     type: "@ConfigFile"
     format: CSS (GNOME Shell St theming)
     src:
       - borshevik-workspace-manager@komorebinator/stylesheet-dark.css
       - borshevik-workspace-manager@komorebinator/stylesheet-light.css
-    description: "Styles of the panel indicator and the rules overlay, in a dark and a light variant: GNOME Shell loads stylesheet-dark.css or stylesheet-light.css for the variant it is drawn in (Main.getStyleVariant) and swaps them by itself when it changes, so the indicator matches the panel it sits on and the overlay the shell's other dialogs — GNOME's own light variant, or Borshevik Glass with dark style off, which makes the shell light. The dark file is the whole look; the light one imports it and overrides only colours — the indicator's hover, active and dragged backgrounds and outline in the panel's dark text colour instead of white, the darkening of inactive workspaces' grey icons (indicator-view#_readDim), the overlay light with dark text — so sizes and spacing are written once. Until 2026-11-03 there was one stylesheet.css, white on the light panel. Active and primary controls follow the user's accent colour; the snap preview reuses GNOME's own tile-preview style for the same reason."
+    description: "Styles of the panel indicator and the rules overlay, in a dark and a light variant: GNOME Shell loads stylesheet-dark.css or stylesheet-light.css for the variant it is drawn in (Main.getStyleVariant) and swaps them by itself when it changes, so the indicator matches the panel it sits on and the overlay the shell's other dialogs — GNOME's own light variant, or Borshevik Glass with dark style off, which makes the shell light. The dark file is the whole look; the light one imports it and overrides only colours — the indicator's hover, active and dragged backgrounds and outline in the panel's dark text colour instead of white, the darkening of inactive workspaces' grey icons (indicator-view#_readDim), the overlay light with dark text — so sizes and spacing are written once. It is not one white stylesheet (decisions#not-one-white). Active and primary controls follow the user's accent colour; the snap preview reuses GNOME's own tile-preview style for the same reason."
+    decisions:
+      - id: not-one-white
+        description: The styles do not assume a dark panel, so they show on a light one too.
+        rejected:
+          - one stylesheet.css, as until 2026-11-03 — white on the light panel
+        date: 2026-11-03
   - id: translations
     type: "@ConfigFile"
     format: gettext (.pot template, .po per-locale, compiled .mo)
@@ -615,7 +770,7 @@ tests:
     command: gjs -m tests/rule-changes/run.js
     expect: prints ok for every case, ends with `<n> ok, 0 failed`, and exits 0
   - id: vm-scenarios
-    description: "The same scenarios as planner-scenarios, from the same file, acted out against a real GNOME Shell in the test machine with real windows, keys and drags (@BorshevikWorkspaceManagerWorkflow#test-vm#scenarios). Where planner-scenarios checks the decisions, this checks that they happen: executor, the adapters, Mutter's own asynchrony. Run in try_in_vm, before the author's own try. Its `verifies` is every scenario tests/scenarios.js does not skip for the test machine, the Chrome and Android groups included, a behaviour named whole when none of its scenarios is left out; what neither level runs — a second monitor, a dialog, and the scenarios not yet kept — is left to tried-by-the-author."
+    description: "The same scenarios as planner-scenarios, from the same file, acted out against a real GNOME Shell in the test machine with real windows, keys and drags (@BorshevikWorkspaceManagerWorkflow#components#test-vm#functions#scenarios). Where planner-scenarios checks the decisions, this checks that they happen: executor, the adapters, Mutter's own asynchrony. Run in try_in_vm, before the author's own try. Its `verifies` is every scenario tests/scenarios.js does not skip for the test machine, the Chrome and Android groups included, a behaviour named whole when none of its scenarios is left out; what neither level runs — a second monitor, a dialog, and the scenarios not yet kept — is left to tried-by-the-author."
     command: tests/vm.sh scenarios
     expect: every scenario prints ok or SKIP, the run ends with no FAIL, and tester's journal shows no error from the extension
     verifies:
@@ -676,11 +831,12 @@ guidelines:
   - "The planner decides from the model, never from Mutter's state in mid-transition: a window's role is the one in its registry record. Mutter's maximize and fullscreen flags are read only where the record does not mean anything yet — a window being taken under management (windows#register, windows#adoptExisting) — and where an adapter tells an echo from a change the user made (windows#_onMaximizeChange). The per-axis maximized_horizontally/maximized_vertically disagree with each other and with the window throughout the asynchronous gaps this code spends most of its time in; Meta.Window has no get_maximized() on GNOME 49/50, so no code calls it."
   - "Never move a window to another workspace, or activate a workspace, inside a handler Mutter calls while it paints a frame — a window actor's `first-frame`, a `BEFORE_REDRAW` later — but at the next idle. Mutter asserts that no frame is in progress when the top window actor changes, and on failing the assertion aborts GNOME Shell: moving an Android window from its first-frame handler took the author's session down on 2026-10-06 (`invalidate_top_window_actor_for_views: assertion failed: (!priv->frame_in_progress)`). dispatch therefore plans and executes only at idle, whatever queued the intent; registering a window from first-frame is safe, since it only records it and queues its opened intent, which dispatch plans at the next idle."
   - An exception thrown inside an idle callback or a signal handler is lost together with whatever it interrupted. dispatch and executor#run catch it, LOG it and carry on with the next operation and the next intent, so that one failure cannot strand a half-moved window and every intent queued behind it; the old code wrapped its slot return in a try for the same reason.
-  - "Every signal handler, every intent dispatched, every plan and every operation executed calls LOG near its entry and at each key transition, with a prefix naming the module and action and the context that matters (the window as log#name names it, its role, workspace index, the intent or op) — e.g. LOG('executor: move', name(win), '→ ws', ws.index()). The debug log is how a misbehaviour seen on someone's machine is reconstructed afterwards, and it is only worth anything if it is everywhere; this is not spelled out on each @Function, and a rebuild keeps it across every module, not only where a description happens to mention it."
-  - "The extension runs all the time, in GNOME Shell's main thread, where whatever it does is paid for on every frame; what it costs is measured, not guessed (perf). Every signal handler of its own is connected through perf#handler and every later and timer runs inside perf#measure, named `<module>: <signal or what it does>`, and whatever the extension holds per window or per workspace is named to perf#watchSize — so the report misses nothing, and a handler or a list added without it is a gap in it. The report only collects; what is too often or too slow is judged by reading it and by the tests of behaviour#quiet, never by thresholds in the extension. It is read the same way in the test machine (tests/vm.sh perf) and in the author's live session (the D-Bus call in extension, or Copy in preferences)."
   - The extension's state lives in the registry — a map from Meta.Window to its record, owned by the extension and cleared on disable — and in the maps of the modules that need their own (android); nothing is attached to Meta.Window objects. The extension stays enabled while the screen is locked (metadata's session-modes), so its state needs to last only as long as it is on; until session-modes was set it was disabled on every lock, which is why the old code kept its state on the windows themselves. Windows already open when it is enabled are taken under management where they are (windows#adoptExisting).
   - No timer, delay or deadline is added to the extension without the author's explicit agreement, asked for that timer on its own. A timer stands in for something the extension does not know — that a window is ready, has taken its size, will be replaced — and guesses it from time; every bug found at the edges with apps and Mutter was one such guess failing, and every fix that added a condition to a timer made the next one harder to find (2026-10-19, when all but Android's (android#ANDROID_REPLACE_MS) were replaced by what Mutter can say — a window's first frame or first size, the minimum width its app declares, its next size-changed, the pointer's every move during a drag (drag#_follow), once polled every 33 ms — and windows opening together, once gathered for 150 ms, came to be placed each on its own). First look for the event or the state that says it; propose a timer only when there is none, saying what it guesses and why nothing else can tell. Deferring to the next idle (LaterType.IDLE), an animation's duration and polling a value with no signal are not guesses of this kind, but the last still needs the same agreement.
   - A change to the default window rules in the schema — a rule added, changed or removed — comes with a new version in rule-changes-files saying the same, in the same commit. The schema alone reaches only accounts that never saved rules; without the version, everyone who did keeps the old defaults for good.
+codestyle:
+  - "Every signal handler, every intent dispatched, every plan and every operation executed calls LOG near its entry and at each key transition, with a prefix naming the module and action and the context that matters (the window as log#name names it, its role, workspace index, the intent or op) — e.g. LOG('executor: move', name(win), '→ ws', ws.index()). The debug log is how a misbehaviour seen on someone's machine is reconstructed afterwards, and it is only worth anything if it is everywhere; this is not spelled out on each @Function, and a rebuild keeps it across every module, not only where a description happens to mention it."
+  - "The extension runs all the time, in GNOME Shell's main thread, where whatever it does is paid for on every frame; what it costs is measured, not guessed (perf). Every signal handler of its own is connected through perf#handler and every later and timer runs inside perf#measure, named `<module>: <signal or what it does>`, and whatever the extension holds per window or per workspace is named to perf#watchSize — so the report misses nothing, and a handler or a list added without it is a gap in it. The report only collects; what is too often or too slow is judged by reading it and by the tests of behaviour#quiet, never by thresholds in the extension. It is read the same way in the test machine (tests/vm.sh perf) and in the author's live session (the D-Bus call in extension, or Copy in preferences)."
 recipes:
   - id: run
     description: Makes the next GNOME Shell session on this machine run the extension straight from the working tree, so a change can be tried before it is committed. The extension is installed per user as a symlink into the repository; a copy under the same UUID in ~/.local/share takes precedence over the one the Borshevik image installs in /usr/share/gnome-shell/extensions, so the session runs the working tree, not the image's copy of the branch Borshevik ships.
@@ -903,7 +1059,7 @@ behaviour:
         when: The tile that covered it closes, or the user drags F
         then: F stays on L; it gets back to S only if the user takes it there in the overview
   - id: view-follows-user
-    description: "The view moves only with the window the user acted on: when an action of theirs takes a window to another workspace, the view goes there with it; when the extension moves a window out of the way, or brings one back, the view stays where it is. A workspace switch the user did not cause takes them away from what they were doing, and several moves that each switch the view on their own make the workspaces flip back and forth by themselves. However many windows one action moves, the view changes at most once. And it never leaves a fullscreen window for a window that opened or moved meanwhile: someone in a fullscreen game or video is not to be pulled out of it by an app starting up — neither by the extension nor by GNOME activating the new window, which may switch workspaces by itself when it activates a window (Discord started over Dota once switched the view; on 2026-10-18, with the hold that took the view back removed (executor#run), Discord's window went to a workspace of its own and GNOME left the view on Dota — the view needs no keeping beyond the planner never naming another workspace)."
+    description: "The view moves only with the window the user acted on: when an action of theirs takes a window to another workspace, the view goes there with it; when the extension moves a window out of the way, or brings one back, the view stays where it is. A workspace switch the user did not cause takes them away from what they were doing, and several moves that each switch the view on their own make the workspaces flip back and forth by themselves. However many windows one action moves, the view changes at most once. And it never leaves a fullscreen window for a window that opened or moved meanwhile: someone in a fullscreen game or video is not to be pulled out of it by an app starting up — neither by the extension nor by GNOME activating the new window, which may switch workspaces by itself when it activates a window (Discord started over Dota once switched the view; decisions#no-keeping)."
     scenarios:
       - id: goes-with-user
         given: Workspace S holds window W and others
@@ -941,8 +1097,12 @@ behaviour:
         given: The active workspace shows a fullscreen window, and another app's window has just opened and gone to a workspace of its own, the view staying (behaviour#view-follows-user#fullscreen-stays)
         when: The user switches to that workspace at once — a swipe, a key
         then: The view stays where the user took it, and GNOME shows that workspace whole — its windows, its overview and the indicator alike
+    decisions:
+      - id: no-keeping
+        description: "The view needs no keeping beyond the planner never naming another workspace: with the hold that took the view back removed (executor#run), Discord started over Dota went to a workspace of its own and GNOME left the view on Dota."
+        date: 2026-10-18
   - id: going-home
-    description: "A window that went with the user — given a workspace of its own because it became blocking where there was no room for it (behaviour#full-alone, behaviour#two-slots#both-taken-new-window) — goes home once it stops being blocking: unmaximized, or dragged so that it floats. It no longer needs a place of its own, and the user expects it back where it came from. It goes home only if it would leave no stranger behind: dragged, it goes when every other window on its workspace came from the same home, and stays when it shares the workspace with any other. A home GNOME has removed, being empty, is no home at all: moving a window to a removed workspace takes GNOME Shell down — the old code did so on unmaximize, and Mutter crashed laying the window out (SIGSEGV in meta_workspace_get_work_area_for_monitor, reproduced twice in the test machine on 2026-10-18). Home is taken only as it is: a tile goes back into its old slot if that is free, and never onto a workspace that is now full; a window that floated there before floats there again, on top, whether or not a full window is there now — a full window keeps out tiles, not guests. Floating windows never go home (behaviour#covered-guests): only a window that stopped being blocking has a reason to."
+    description: "A window that went with the user — given a workspace of its own because it became blocking where there was no room for it (behaviour#full-alone, behaviour#two-slots#both-taken-new-window) — goes home once it stops being blocking: unmaximized, or dragged so that it floats. It no longer needs a place of its own, and the user expects it back where it came from. It goes home only if it would leave no stranger behind: dragged, it goes when every other window on its workspace came from the same home, and stays when it shares the workspace with any other. A home GNOME has removed, being empty, is no home at all: moving a window to a removed workspace takes GNOME Shell down — the old code did so on unmaximize, and Mutter crashed laying the window out (decisions#removed-home). Home is taken only as it is: a tile goes back into its old slot if that is free, and never onto a workspace that is now full; a window that floated there before floats there again, on top, whether or not a full window is there now — a full window keeps out tiles, not guests. Floating windows never go home (behaviour#covered-guests): only a window that stopped being blocking has a reason to."
     scenarios:
       - id: unmaximize-to-free-slot
         given: Window W was tiled left on S, was maximized and went to a workspace of its own; the left slot of S is still free
@@ -988,6 +1148,11 @@ behaviour:
         given: Window W's home workspace has since been removed, being empty
         when: W stops being blocking
         then: W stays where it is, floating or in the slot it had there
+    decisions:
+      - id: removed-home
+        description: A removed workspace is never a home a window is sent back to.
+        upstream: Mutter crashes laying out a window moved to a removed workspace — SIGSEGV in meta_workspace_get_work_area_for_monitor, reproduced twice in the test machine
+        date: 2026-10-18
   - id: minimize
     description: "A minimized window holds no slot and is never taken for covered. Restored — however that happens: by the user, from the dock or search, or by an app activating it — it goes back to its own workspace and its own slot, with the right to take it: the window there now is displaced (behaviour#displacement) and comes back when the restored one is minimized again. So one slot can cycle between apps without the wall being rearranged by hand. A restore cannot be told apart from an app activating its window, so a link opened in a minimized browser displaces too; the window asked to be seen, and the slot it takes back is its own. Planned: the minimized window shown as a bubble above the other windows, which restores it with a click (see the description)."
     scenarios:
@@ -1020,7 +1185,7 @@ behaviour:
         when: F is restored
         then: F comes back on S at the geometry it had, above the windows there
   - id: user-moves
-    description: "A window the user moves to another workspace themselves — in the overview, or with a keyboard shortcut — is theirs to place. Its home is forgotten, since the user has given it a new one; it is raised above the windows already there, so that being moved does not get it covered and sent away at once (behaviour#covered-guests); and its role there is guessed from what is free, since a move carries no position to go by. A full window moved onto a workspace holding other windows is unmaximized there and placed in the role it had before it became full, rather than sent off to a workspace of its own (behaviour#full-alone): the user chose that workspace, and sending it away undid their move — bringing back a window that had gone right when maximized only made it jump right again (seen 2026-10-18 with Chrome). Choosing the side such a window lands on, rather than having it guessed, is left to the planned drop zones. Planned: drop zones on the overview's workspace previews, so that a window dropped in the middle becomes a guest and one dropped at an edge takes that slot (behaviour#two-slots#both-taken-explicit), without guessing."
+    description: "A window the user moves to another workspace themselves — in the overview, or with a keyboard shortcut — is theirs to place. Its home is forgotten, since the user has given it a new one; it is raised above the windows already there, so that being moved does not get it covered and sent away at once (behaviour#covered-guests); and its role there is guessed from what is free, since a move carries no position to go by. A full window moved onto a workspace holding other windows is unmaximized there and placed in the role it had before it became full, rather than sent off to a workspace of its own (behaviour#full-alone): the user chose that workspace (decisions#stay-where-moved). Choosing the side such a window lands on, rather than having it guessed, is left to the planned drop zones. Planned: drop zones on the overview's workspace previews, so that a window dropped in the middle becomes a guest and one dropped at an edge takes that slot (behaviour#two-slots#both-taken-explicit), without guessing."
     scenarios:
       - id: tile-to-empty
         given: Window W is tiled on the left
@@ -1054,6 +1219,12 @@ behaviour:
         given: Tile W is moved by the user off workspace S, and tile C was displaced from W's slot on S
         when: W leaves S
         then: C comes back to that slot (behaviour#displacement#returns-when-free)
+    decisions:
+      - id: stay-where-moved
+        description: A full window the user moves onto a workspace with others stays there, unmaximized.
+        rejected:
+          - "sending it off to a workspace of its own — undid the user's move: a Chrome window that had gone right when maximized only jumped right again"
+        date: 2026-10-18
   - id: drag-and-snap
     description: "Dragging a window by its title bar decides its role at the drop: at the left or right edge of the work area it is tiled there, at the top edge maximized, anywhere else it floats where it was dropped; while the pointer is in a zone, a preview shows the outcome. There is no bottom edge zone. A click on a title bar is not a drag: a tile is detached, and the zones come alive, only once the pointer has travelled DRAG_THRESHOLD from where it started, because a tile detached by a click would jump to its float size for nothing. A full Android window is never snapped (drag#_onGrabBegin)."
     scenarios:
@@ -1298,7 +1469,11 @@ functions:
   - id: _dispatchOne
     description: "One intent taken from the queue at idle: snapshot, plan, execute, each measured under the intent's type (perf#measure), then the refresh and the rechecks dispatch describes, and on to the next."
   - id: logPlan
-    description: "Logs one plan in full: the wall it was made from — every window with its workspace, role, rect, place in the stacking, home and float geometry — the intent's details, every operation with its windows, workspaces and rects, the workspace shown and the window focused, and, for every guest moved off as covered, its rect and z and those of each window that counted as covering it (planner#Plan's notes). The short line dispatch logs for each plan names the operations only; a misplacement seen on the author's machine on 2026-10-18 could not be explained from it, which is why the whole plan is written out."
+    description: "Logs one plan in full: the wall it was made from — every window with its workspace, role, rect, place in the stacking, home and float geometry — the intent's details, every operation with its windows, workspaces and rects, the workspace shown and the window focused, and, for every guest moved off as covered, its rect and z and those of each window that counted as covering it (planner#Plan's notes). The short line dispatch logs for each plan names the operations only, so the whole plan is written out as well (decisions#whole-plan)."
+    decisions:
+      - id: whole-plan
+        description: "The whole plan is logged: a misplacement seen on the author's machine could not be explained from the short line."
+        date: 2026-10-18
   - id: _watchSizes
     description: "Names to the report (perf#watchSize) what the extension holds: the workspaces and windows in the session, for scale; the registry's managed and ignored windows; the intents waiting; the windows windows follows and their remembered states; the workspace handlers windows and indicator hold, and the work areas windows remembers; the windows executor waits on for a size; Android's watched windows, their actor handlers and its closed windows awaiting a replacement; the indicator's buttons."
   - id: _isRelevant

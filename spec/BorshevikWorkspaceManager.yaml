@@ -9,7 +9,5 @@ settings:
   readme: ../README.md
 software:
   - "@BorshevikWorkspaceManagerExtension"
-startup:
-  - load
 workflow:
   type: "@BorshevikWorkspaceManagerWorkflow"
