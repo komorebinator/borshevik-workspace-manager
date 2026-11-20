@@ -21,13 +21,16 @@
 }
 
 .bwm-ws {
-    padding: 0 2px;
+    padding: 0 1px;
 }
 
+/* the dragged button's shape, .bwm-ws-dragged: its 2 px border is there on every button,
+   transparent but on the active one, so none changes size as the active workspace changes */
 .bwm-ws-bg {
     height: 22px;
     min-width: 28px;
     padding: 0 4px;
+    border: 2px solid transparent;
     border-radius: 9999px;
     transition-duration: 150ms;
 }
@@ -36,8 +39,11 @@
     background-color: rgba(255, 255, 255, 0.1);
 }
 
+/* the active workspace: outlined like the dragged button, in the accent colour; the
+   light variant takes the outline as it is, with its own background */
 .bwm-ws-active {
     background-color: rgba(255, 255, 255, 0.15);
+    border-color: st-transparentize(-st-accent-color, 0.4);
 }
 
 .bwm-ws-active:hover {
@@ -68,8 +74,10 @@
     padding: 0;
 }
 
+/* in a slot as wide as an app's icon */
 .bwm-ws-plus {
     opacity: 0.6;
+    width: 22px;
 }
 
 /* ── Rules overlay ───────────────────────────────────────────────────────── */

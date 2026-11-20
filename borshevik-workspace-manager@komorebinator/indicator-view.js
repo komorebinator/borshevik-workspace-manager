@@ -15,7 +15,9 @@ import St from 'gi://St';
 import { count } from './perf.js';
 
 const ICON_PX = 22;
-const INACTIVE_OPACITY = 204;   // 80%
+const PLUS_PX = 16;   // the '+', in a slot of ICON_PX: stylesheet's .bwm-ws-plus
+const INACTIVE_OPACITY = 204;   // 80%: the logo away from the pointer
+const OTHER_WS_OPACITY = 230;   // 90%: every workspace's button but the active one's
 
 export class IndicatorView {
     // box: where the buttons go, after the logo; onLogo(), onClick(button), onPress(button, event)
@@ -84,13 +86,9 @@ export class IndicatorView {
         const num = new St.Label({ text: `${entry.num}`, style_class: 'bwm-ws-num', y_align: Clutter.ActorAlign.CENTER });
         const row = new St.BoxLayout({ style_class: 'bwm-ws-row' });
         row.add_child(num);
-        // one for the whole row, switched rather than made anew: each effect draws its actor
-        // through a buffer of its own at every paint of the panel
-        const grey = new Clutter.DesaturateEffect({ factor: 1.0 });
-        row.add_effect(grey);
         const bg = new St.Bin({ style_class: 'bwm-ws-bg', child: row });
         actor.set_child(bg);
-        const b = { actor, bg, row, num, grey, ws: entry.ws, plus: false, plusIcon: null, icons: [] };
+        const b = { actor, bg, row, num, ws: entry.ws, plus: false, plusIcon: null, icons: [] };
         actor.connect('clicked', () => this._onClick(b));
         actor.connect('button-press-event', (_a, event) => this._onPress(b, event));
         this._buttons.set(entry.ws, b);
@@ -109,10 +107,9 @@ export class IndicatorView {
     }
 
     _setActive(b, active) {
-        b.actor.opacity = active ? 255 : INACTIVE_OPACITY;
+        b.actor.opacity = active ? 255 : OTHER_WS_OPACITY;
         if (active) b.bg.add_style_class_name('bwm-ws-active');
         else b.bg.remove_style_class_name('bwm-ws-active');
-        b.grey.enabled = !active;
     }
 
     // An app's icon is taken over from the button's own before one is made: a window gone or come
@@ -127,7 +124,7 @@ export class IndicatorView {
         b.icons = [];
         if (entry.plus && !b.plusIcon) {
             b.plusIcon = new St.Icon({
-                icon_name: 'list-add-symbolic', icon_size: 14, style_class: 'bwm-ws-plus',
+                icon_name: 'list-add-symbolic', icon_size: PLUS_PX, style_class: 'bwm-ws-plus',
                 y_align: Clutter.ActorAlign.CENTER,
             });
             b.row.add_child(b.plusIcon);

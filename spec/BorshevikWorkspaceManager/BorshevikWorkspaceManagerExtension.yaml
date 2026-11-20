@@ -552,9 +552,29 @@ components:
           - id: buttons
             description: "The buttons in the order shown, for workspace-drag: each with its actor, its background, which a drag clones, its workspace, and whether it is the '+'."
           - id: _setActive
-            description: "The active workspace's button opaque, with the active background, its icons in colour; any other at 80% and greyed. The grey is one Clutter.DesaturateEffect on the button's row, switched on and off, not one made anew for each icon of each button at every change: each effect draws its actor through a buffer of its own at every paint of the panel."
+            description: "The active workspace's button opaque, with the active background and outline; any other at 90 %, its icons in colour as the active one's (decisions#in-colour). Opacity alone sets them back: it is the button actor's own, with no effect drawing the row through a buffer of its own at every paint of the panel."
+            decisions:
+              - id: in-colour
+                description: Other workspaces' buttons are set back by opacity alone, their icons left in colour, and only a little — at 90 %, an effect slight to the eye that still shapes how the row reads; greying them, wholly or in part, was not to the author's liking. Chosen by the author in the test machine, from photographs of each way over a light and a dark panel, then live on its panel, against 100 %.
+                rejected:
+                  - icons wholly grey (a Clutter.DesaturateEffect on the row), buttons at 80 %, as until 2026-11-20
+                  - icons greyed by 60 % — tried live, not liked
+                  - in colour at 60, 65 and 70 % — tried live, too transparent; at 80 % and at 100 % — tried live, 90 % preferred
+                  - "a shader on the row, each tried live and not liked: a duotone through the accent colour, a blur of radius 1 and 2, the lightness drawn toward the panel's in CIELAB (as Borshevik Glass lifts the wallpaper) at 0.6 and 0.4"
+                  - "shown on the photographs and not chosen: greyed by 80, 40 and 30 %; in colour at 45 %; contrast lowered by 30 or 50 %; other workspaces' icons drawn at 18 px"
+                by: author
+                date: 2026-11-20
           - id: _setIcons
-            description: "Puts the entry's icons in the row, or the '+': an app's icon is taken over from the button's own before one is made (create_icon_texture), so a window come or gone makes one icon, not the row's; the icons left over are destroyed."
+            description: "Puts the entry's icons in the row, or the '+': an app's icon is taken over from the button's own before one is made (create_icon_texture), so a window come or gone makes one icon, not the row's; the icons left over are destroyed. The '+' is a 16 px icon in a slot as wide as an app's icon, so its button is as wide as a workspace's with one window and as roomy around what it shows (decisions#plus-slot)."
+            decisions:
+              - id: plus-slot
+                description: "The '+' sits in a 22 px slot, an app icon's width, and is drawn at 16 px: at 14 px with no slot its button was narrower than any other and tight on the right, which showed once it was the active one, with its background and outline."
+                rejected:
+                  - 14 px with no slot, as until 2026-11-20
+                  - 14 px and 18 px in the slot
+                  - 22 px — coarse beside the numbers
+                by: author
+                date: 2026-11-20
           - id: setOverview
             description: The logo's highlight while the overview is open.
       - id: workspace-drag
@@ -568,21 +588,17 @@ components:
           - id: GAP_MS
             default: 150
             description: How long the buttons take to move apart for the gap, or back.
-          - id: OUTLINE_PX
-            default: 2
-            description: The width of the outline around the dragged button, the border of stylesheet's .bwm-ws-dragged, by which the frame is set off so what it holds stays where the button was. Only what the button shows — its number and icons — is cloned to follow the pointer; the frame, a St.Bin carrying that class, gives it the button's shape with a background and outline of its own, the same whichever workspace is dragged. The button's background is not cloned with it (decisions#no-background-clone).
+        functions:
+          - id: _onEvent
+            description: "The events of the press, until it ends. Until the drag starts they are the stage's captured events, seen before the buttons see them. A motion past DRAG_THRESHOLD_PX starts the drag: an actor of the drag's own, 0×0 in the UI group, takes the pointer and keyboard (Main.pushModal), as GNOME's own drags do, and from then on its plain events are listened to — a grab has no capture phase. Without the grab a release over a window went to that window's app and the drag never saw it end: it stayed open and swallowed the next press on the indicator (decisions#grab). What the dragged button shows — its number and icons — is cloned to follow the pointer along the panel, in a frame of stylesheet's .bwm-ws-dragged: a St.Bin giving it the button's shape with a background and outline of its own, the same whichever workspace is dragged, put exactly where the button's background was, since every button's background has the frame's 2 px border, transparent on all but the active one. The button's own background is not cloned with it (decisions#no-background-clone), and the button is left as an empty space; every motion after that moves the frame and the gap (_insertionAt, _openGap). The release drops the workspace into the gap, or cancels if the pointer is away from the indicator; Escape cancels; a motion with the button up ends it too, its release having been missed. A press that never became a drag is left to the button's click."
             decisions:
+              - id: grab
+                description: "The drag holds a grab. Seen in the test machine without it, as the old code had it: a release over a window went to that window's app, and the drag stayed open."
+                date: 2026-10-19
               - id: no-background-clone
                 description: Only the outline goes with the dragged button, not its background.
                 rejected:
                   - cloning the background as well — the active workspace's, lighter still under the pointer, swallowed the outline (seen by the author)
-                date: 2026-10-19
-        functions:
-          - id: _onEvent
-            description: "The events of the press, until it ends. Until the drag starts they are the stage's captured events, seen before the buttons see them. A motion past DRAG_THRESHOLD_PX starts the drag: an actor of the drag's own, 0×0 in the UI group, takes the pointer and keyboard (Main.pushModal), as GNOME's own drags do, and from then on its plain events are listened to — a grab has no capture phase. Without the grab a release over a window went to that window's app and the drag never saw it end: it stayed open and swallowed the next press on the indicator (decisions#grab). The dragged button's background is cloned to follow the pointer along the panel and the button itself is left as an empty space; every motion after that moves the clone and the gap (_insertionAt, _openGap). The release drops the workspace into the gap, or cancels if the pointer is away from the indicator; Escape cancels; a motion with the button up ends it too, its release having been missed. A press that never became a drag is left to the button's click."
-            decisions:
-              - id: grab
-                description: "The drag holds a grab. Seen in the test machine without it, as the old code had it: a release over a window went to that window's app, and the drag stayed open."
                 date: 2026-10-19
           - id: _insertionAt
             description: "Where the workspace would go for a pointer at x: the number of the other buttons whose middle the dragged button's left edge has passed, the dragged button centred on the pointer and the others measured where they stand with it taken out of the row, so the gap moving does not move the answer. A button is passed, and the gap opens beyond it, once the dragged one covers more than half of it, as with tabs (decisions#by-coverage). Never after the '+', which stays last."
@@ -690,13 +706,23 @@ components:
     src:
       - borshevik-workspace-manager@komorebinator/stylesheet-dark.css
       - borshevik-workspace-manager@komorebinator/stylesheet-light.css
-    description: "Styles of the panel indicator and the rules overlay, in a dark and a light variant: GNOME Shell loads stylesheet-dark.css or stylesheet-light.css for the variant it is drawn in (Main.getStyleVariant) and swaps them by itself when it changes, so the indicator matches the panel it sits on and the overlay the shell's other dialogs — GNOME's own light variant, or Borshevik Glass with dark style off, which makes the shell light. The dark file is the whole look; the light one imports it and overrides only colours — the indicator's hover, active and dragged backgrounds and outline in the panel's dark text colour instead of white, the overlay light with dark text — so sizes and spacing are written once. It is not one white stylesheet (decisions#not-one-white). Active and primary controls follow the user's accent colour; the snap preview reuses GNOME's own tile-preview style for the same reason."
+    description: "Styles of the panel indicator and the rules overlay, in a dark and a light variant: GNOME Shell loads stylesheet-dark.css or stylesheet-light.css for the variant it is drawn in (Main.getStyleVariant) and swaps them by itself when it changes, so the indicator matches the panel it sits on and the overlay the shell's other dialogs — GNOME's own light variant, or Borshevik Glass with dark style off, which makes the shell light. The dark file is the whole look; the light one imports it and overrides only colours — the indicator's hover, active and dragged backgrounds and outline in the panel's dark text colour instead of white, the overlay light with dark text — so sizes and spacing are written once. It is not one white stylesheet (decisions#not-one-white). Active and primary controls follow the user's accent colour, the active workspace's button among them: its 2 px border is in the accent, where every other button's is transparent, so no button changes size as the active workspace changes (decisions#active-outline); the snap preview reuses GNOME's own tile-preview style for the same reason."
     decisions:
       - id: not-one-white
         description: The styles do not assume a dark panel, so they show on a light one too.
         rejected:
           - one stylesheet.css, as until 2026-11-03 — white on the light panel
         date: 2026-11-03
+      - id: active-outline
+        description: The active workspace's button keeps its translucent background and gets a 2 px border in the accent colour at 60 %, in both variants — the look of a dragged button, outline outside the background, in the accent. Every other button has the same border, transparent, so none changes size as the active workspace changes. The 1 px inset outline it replaced, chosen first, looked cramped and unlike the dragged button beside it; 80 % had been chosen in Borshevik Glass's appearance lab over the author's wallpapers and turned out too bright on the author's own screen. The 2 px at 60 % was chosen by the author in the test machine, from photographs of each strength over a light and a dark panel, then live on its panel.
+        rejected:
+          - the background alone, as until 2026-11-19
+          - a 1 px outline inset in the background, at 60 %, as on 2026-11-19 — cramped, unlike the dragged button
+          - 80 % — too bright on a real screen; 2 px at 40 %, 80 % and 100 %
+          - a fainter one (35 %) and a thicker one (1.5 px at 60 %), inset
+          - the background in the accent colour as well
+        by: author
+        date: 2026-11-20
   - id: translations
     type: "@ConfigFile"
     format: gettext (.pot template, .po per-locale, compiled .mo)
@@ -705,6 +731,7 @@ components:
       - po/ru.po
       - borshevik-workspace-manager@komorebinator/locale/ru/LC_MESSAGES/borshevik-workspace-manager@komorebinator.mo
     description: "The extension's strings — panel, rules overlay and preferences — with a Russian translation. The compiled .mo is what is loaded, and what the image ships (see @BorshevikWorkspaceManagerWorkflow)."
+  styles:
 tests:
   - id: tried-by-the-author
     description: Manual. Tiling, workspace automation and the rules overlay can only be judged in a running shell, with real applications.

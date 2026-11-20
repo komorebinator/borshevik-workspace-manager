@@ -16,7 +16,6 @@ import { isLive } from './workspaces.js';
 
 const DRAG_THRESHOLD_PX = 6;
 const GAP_MS = 150;
-const OUTLINE_PX = 2;   // .bwm-ws-dragged's border, around the clone
 
 export class WorkspaceDrag {
     // buttons: the indicator's, in the order shown; source: the one pressed; onEnd(dragged): called
@@ -105,10 +104,11 @@ export class WorkspaceDrag {
         const [bx, by] = bg.get_transformed_position();
         // Only what the button shows is cloned, its number and icons: the background is the
         // frame's own, the same whichever workspace is dragged — the active one's, lighter still
-        // under the pointer, swallowed the outline. A clone takes no style, hence the frame.
+        // under the pointer, swallowed the outline. A clone takes no style, hence the frame; it
+        // has the background's shape, border included, so it goes where the background is.
         this._clone = new St.Bin({
             style_class: 'bwm-ws-dragged', child: new Clutter.Clone({ source: bg.get_child() }),
-            x: bx - OUTLINE_PX, y: by - OUTLINE_PX,
+            x: bx, y: by,
         });
         Main.layoutManager.uiGroup.add_child(this._clone);
         // its place stays empty until the gap moves away from it
