@@ -11,7 +11,7 @@ State model: what the extension knows about each window is in the registry, owne
 Planned, not built yet, each with its issue in this repository: a minimized window shown as a bubble that restores it (issue #2, see behaviour#minimize), and drop zones on the overview's workspace previews (issue #3, see behaviour#user-moves)."
 extends: "@Extension"
 target: "@GnomeShell"
-platform: GJS (GNOME Shell 49/50) — Clutter, GLib, Meta, Shell, St, Gio
+platform: GJS (GNOME Shell 49/50/51) — Clutter, GLib, Meta, Shell, St, Gio
 src: borshevik-workspace-manager@komorebinator/extension.js
 components:
   - id: log
@@ -687,7 +687,7 @@ components:
   - id: metadata
     type: "@ConfigFile"
     src: borshevik-workspace-manager@komorebinator/metadata.json
-    description: "Extension manifest: GNOME Shell 49 and 50, linking the settings schema, and `session-modes` of user and unlock-dialog, so GNOME keeps the extension enabled while the screen is locked instead of disabling it on every lock and enabling it on every unlock — which rewrote Mutter's settings back and forth, rebuilt the indicator and took every window under management again each time (see the guidelines on state, and indicator#_onSessionModeUpdated for what that asks of the indicator)."
+    description: "Extension manifest: GNOME Shell 49, 50 and 51, linking the settings schema, and `session-modes` of user and unlock-dialog, so GNOME keeps the extension enabled while the screen is locked instead of disabling it on every lock and enabling it on every unlock — which rewrote Mutter's settings back and forth, rebuilt the indicator and took every window under management again each time (see the guidelines on state, and indicator#_onSessionModeUpdated for what that asks of the indicator)."
   - id: icon
     type: "@Graphic"
     format: SVG

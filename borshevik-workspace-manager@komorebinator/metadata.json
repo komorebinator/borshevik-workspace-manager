@@ -5,7 +5,8 @@
   "uuid": "borshevik-workspace-manager@komorebinator",
   "shell-version": [
     "49",
-    "50"
+    "50",
+    "51"
   ],
   "version": 1,
   "settings-schema": "org.gnome.shell.extensions.borshevik-workspace-manager",
