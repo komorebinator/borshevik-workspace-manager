@@ -39,15 +39,18 @@
     background-color: rgba(255, 255, 255, 0.1);
 }
 
-/* the active workspace: outlined like the dragged button, in the accent colour; the
-   light variant takes the outline as it is, with its own background */
+/* the active workspace: outlined like the dragged button, in the accent colour, and its
+   background tinted with it — the accent at 10 % laid over white at 15 % (35 % under the
+   pointer), folded into one colour, as St draws one background: 23.5 % opaque, 42.6 % of
+   it the accent (41.5 % and 24.1 %). The light variant takes the outline as it is and folds
+   the accent into its own background the same way. */
 .bwm-ws-active {
-    background-color: rgba(255, 255, 255, 0.15);
+    background-color: st-transparentize(st-mix(-st-accent-color, white, 42.6%), 0.765);
     border-color: st-transparentize(-st-accent-color, 0.4);
 }
 
 .bwm-ws-active:hover {
-    background-color: rgba(255, 255, 255, 0.35);
+    background-color: st-transparentize(st-mix(-st-accent-color, white, 24.1%), 0.585);
 }
 
 /* the dragged button: .bwm-ws-bg's shape, a background of its own and an outline */

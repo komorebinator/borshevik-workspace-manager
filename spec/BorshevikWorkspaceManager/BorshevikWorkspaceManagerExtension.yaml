@@ -714,13 +714,13 @@ components:
           - one stylesheet.css, as until 2026-11-03 — white on the light panel
         date: 2026-11-03
       - id: active-outline
-        description: The active workspace's button keeps its translucent background and gets a 2 px border in the accent colour at 60 %, in both variants — the look of a dragged button, outline outside the background, in the accent. Every other button has the same border, transparent, so none changes size as the active workspace changes. The 1 px inset outline it replaced, chosen first, looked cramped and unlike the dragged button beside it; 80 % had been chosen in Borshevik Glass's appearance lab over the author's wallpapers and turned out too bright on the author's own screen. The 2 px at 60 % was chosen by the author in the test machine, from photographs of each strength over a light and a dark panel, then live on its panel.
+        description: The active workspace's button gets a 2 px border in the accent colour at 60 %, in both variants — the look of a dragged button, outline outside the background, in the accent — and its translucent background is tinted with the accent too, as if the accent at 10 % lay over it. Every other button has the same border, transparent, so none changes size as the active workspace changes. The 1 px inset outline it replaced, chosen first, looked cramped and unlike the dragged button beside it; 80 % had been chosen in Borshevik Glass's appearance lab over the author's wallpapers and turned out too bright on the author's own screen. The 2 px at 60 % was chosen by the author in the test machine, from photographs of each strength over a light and a dark panel, then live on its panel; the tint, in a session of the author's own.
         rejected:
           - the background alone, as until 2026-11-19
           - a 1 px outline inset in the background, at 60 %, as on 2026-11-19 — cramped, unlike the dragged button
           - 80 % — too bright on a real screen; 2 px at 40 %, 80 % and 100 %
           - a fainter one (35 %) and a thicker one (1.5 px at 60 %), inset
-          - the background in the accent colour as well
+          - the background wholly in the accent colour as well
         by: author
         date: 2026-11-20
   - id: translations
