@@ -16,12 +16,13 @@
     background-color: rgba(34, 34, 38, 0.1);
 }
 
+/* the accent at 10 % over the dark text colour at 15 % (30 % under the pointer) */
 .bwm-ws-active {
-    background-color: rgba(34, 34, 38, 0.15);
+    background-color: st-transparentize(st-mix(-st-accent-color, #222226, 42.6%), 0.765);
 }
 
 .bwm-ws-active:hover {
-    background-color: rgba(34, 34, 38, 0.3);
+    background-color: st-transparentize(st-mix(-st-accent-color, #222226, 27%), 0.63);
 }
 
 .bwm-ws-dragged {
