@@ -79,7 +79,7 @@ export class WindowRulesUI {
 
         this._widget = new St.BoxLayout({
             style_class: 'bwm-rules-overlay',
-            vertical: true,
+            orientation: Clutter.Orientation.VERTICAL,
             reactive: true,
             can_focus: true,
             width:  W,
@@ -128,7 +128,7 @@ export class WindowRulesUI {
         this._widget.add_child(new St.Widget({ style_class: 'bwm-rules-separator', x_expand: true }));
 
         // ── Content area: a tab's list, or one rule's form ──
-        this._contentBox = new St.BoxLayout({ vertical: true, x_expand: true, y_expand: true });
+        this._contentBox = new St.BoxLayout({ orientation: Clutter.Orientation.VERTICAL, x_expand: true, y_expand: true });
         this._widget.add_child(this._contentBox);
     }
 
@@ -164,7 +164,7 @@ export class WindowRulesUI {
 
     _buildWindowsTab() {
         const scroll = new St.ScrollView({ x_expand: true, y_expand: true, style_class: 'bwm-rules-scroll' });
-        const vbox = new St.BoxLayout({ vertical: true, x_expand: true, style_class: 'bwm-rules-list' });
+        const vbox = new St.BoxLayout({ orientation: Clutter.Orientation.VERTICAL, x_expand: true, style_class: 'bwm-rules-list' });
         scroll.set_child(vbox);
         this._contentBox.add_child(scroll);
 
@@ -194,7 +194,7 @@ export class WindowRulesUI {
     }
 
     _buildWindowSection(container, win, tracker) {
-        const section = new St.BoxLayout({ vertical: true, x_expand: true, style_class: 'bwm-rules-section' });
+        const section = new St.BoxLayout({ orientation: Clutter.Orientation.VERTICAL, x_expand: true, style_class: 'bwm-rules-section' });
         container.add_child(section);
 
         // Window header row
@@ -208,7 +208,7 @@ export class WindowRulesUI {
             winRow.add_child(icon);
         }
 
-        const labels = new St.BoxLayout({ vertical: true, x_expand: true, y_align: Clutter.ActorAlign.CENTER });
+        const labels = new St.BoxLayout({ orientation: Clutter.Orientation.VERTICAL, x_expand: true, y_align: Clutter.ActorAlign.CENTER });
         const titleStr = win.get_title() ?? '';
         labels.add_child(new St.Label({
             text: titleStr.length > 60 ? titleStr.slice(0, 60) + '…' : (titleStr || (win.get_wm_class() ?? '')),
@@ -239,7 +239,7 @@ export class WindowRulesUI {
 
     _buildRulesTab() {
         const scroll = new St.ScrollView({ x_expand: true, y_expand: true, style_class: 'bwm-rules-scroll' });
-        const vbox = new St.BoxLayout({ vertical: true, x_expand: true, style_class: 'bwm-rules-list' });
+        const vbox = new St.BoxLayout({ orientation: Clutter.Orientation.VERTICAL, x_expand: true, style_class: 'bwm-rules-list' });
         scroll.set_child(vbox);
         this._contentBox.add_child(scroll);
 
@@ -249,7 +249,7 @@ export class WindowRulesUI {
 
     // A rule as a line of its list; pressed, it opens its form in place of the list.
     _appendRuleRow(container, rule) {
-        const rowBox = new St.BoxLayout({ vertical: true, x_expand: true, style_class: 'bwm-rules-rule-row' });
+        const rowBox = new St.BoxLayout({ orientation: Clutter.Orientation.VERTICAL, x_expand: true, style_class: 'bwm-rules-rule-row' });
         container.add_child(rowBox);
         const summaryRow = new St.BoxLayout({ x_expand: true, reactive: true, style_class: 'bwm-rules-summary-row' });
         rowBox.add_child(summaryRow);
@@ -277,7 +277,7 @@ export class WindowRulesUI {
         this._ruleBtn.label = isNew ? _('New rule') : _('Edit rule');
         this._ruleBtn.style_class = 'bwm-rules-tab bwm-rules-tab-active';
         const scroll = new St.ScrollView({ x_expand: true, y_expand: true, style_class: 'bwm-rules-scroll' });
-        const form = new St.BoxLayout({ vertical: true, x_expand: true, style_class: 'bwm-rules-detail' });
+        const form = new St.BoxLayout({ orientation: Clutter.Orientation.VERTICAL, x_expand: true, style_class: 'bwm-rules-detail' });
         scroll.set_child(form);
         this._contentBox.add_child(scroll);
         this._populateEditor(form, rule, isNew, () => this._later(() => this._switchTab(this._activeTab)));
@@ -383,7 +383,7 @@ export class WindowRulesUI {
     }
 
     _makeGeomRow(geom, onChange) {
-        const box = new St.BoxLayout({ vertical: true, x_expand: true, style_class: 'bwm-rules-geom-box' });
+        const box = new St.BoxLayout({ orientation: Clutter.Orientation.VERTICAL, x_expand: true, style_class: 'bwm-rules-geom-box' });
 
         const headerRow = new St.BoxLayout({ style_class: 'bwm-rules-row', x_expand: true });
         headerRow.add_child(this._makeToggle(geom.enabled, v => { geom.enabled = v; onChange?.(); }));
