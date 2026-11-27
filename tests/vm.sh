@@ -123,7 +123,9 @@ log_out() {
     for _ in $(seq 30); do pgrep -u tester -x gnome-shell >/dev/null || break; sleep 1; done
 }
 # dbus-daemon talks on stderr about every private bus it starts; only gsettings' own errors are kept
-offline_gsettings() { runuser -u tester -- env -u XDG_RUNTIME_DIR HOME=$home dbus-run-session -- gsettings "$@" 2> >(grep -v "^dbus-daemon\[" >&2); }
+# GIO_USE_VFS=local: GIO would start gvfs on that bus, and gvfsd-fuse, left running with the
+# filter's pipe, keeps the filter and so $(offline_gsettings ...) from ever finishing
+offline_gsettings() { runuser -u tester -- env -u XDG_RUNTIME_DIR HOME=$home GIO_USE_VFS=local dbus-run-session -- gsettings "$@" 2> >(grep -v "^dbus-daemon\[" >&2); }
 enable_extension() {
     local cur
     cur=$(offline_gsettings get org.gnome.shell enabled-extensions)
